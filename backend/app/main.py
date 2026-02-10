@@ -136,6 +136,25 @@ def _issue_auth_tokens(db: Session, user_id: Any) -> tuple[dict[str, str | int],
     )
 
 
+def _map_crawler_runtime_error(exc: RuntimeError) -> HTTPException:
+    message = str(exc)
+    lowered = message.lower()
+    if (
+        "429" in message
+        or "too many requests" in lowered
+        or "rate limit" in lowered
+        or "too_many_requests" in lowered
+    ):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="네이버 부동산 요청 한도에 도달했습니다. 잠시 후 다시 시도해주세요.",
+        )
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=f"네이버 부동산 응답 오류: {message}",
+    )
+
+
 @app.on_event("startup")
 async def startup_event() -> None:
     global scheduler_task
@@ -181,7 +200,10 @@ def meta() -> dict[str, str | int]:
 @app.get("/crawler/articles/{complex_no}")
 def crawler_articles(complex_no: int, page: int = 1) -> dict[str, object]:
     client = NaverLandClient(settings=settings)
-    payload = client.fetch_complex_articles(complex_no=complex_no, page=page)
+    try:
+        payload = client.fetch_complex_articles(complex_no=complex_no, page=page)
+    except RuntimeError as exc:
+        raise _map_crawler_runtime_error(exc) from exc
     items = client.summarize_articles(payload)
     return {
         "complex_no": complex_no,
@@ -203,13 +225,16 @@ def crawler_ingest(
     if max_pages < 1 or max_pages > 20:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="max_pages must be between 1 and 20")
 
-    return ingest_complex_snapshot(
-        db=db,
-        settings=settings,
-        complex_no=complex_no,
-        page=page,
-        max_pages=max_pages,
-    )
+    try:
+        return ingest_complex_snapshot(
+            db=db,
+            settings=settings,
+            complex_no=complex_no,
+            page=page,
+            max_pages=max_pages,
+        )
+    except RuntimeError as exc:
+        raise _map_crawler_runtime_error(exc) from exc
 
 
 @app.get("/analytics/trend/{complex_no}")
