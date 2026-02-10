@@ -27,6 +27,10 @@ class User(Base):
     watch_complexes: Mapped[list["UserWatchComplex"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     presets: Mapped[list["UserPreset"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     refresh_tokens: Mapped[list["AuthRefreshToken"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    access_token_revocations: Mapped[list["AuthAccessTokenRevocation"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     notification_setting: Mapped["UserNotificationSetting | None"] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
@@ -131,6 +135,20 @@ class AuthRefreshToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user: Mapped["User"] = relationship(back_populates="refresh_tokens")
+
+
+class AuthAccessTokenRevocation(Base):
+    __tablename__ = "auth_access_token_revocations"
+    __table_args__ = (UniqueConstraint("jti", name="uq_access_jti"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    jti: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user: Mapped["User"] = relationship(back_populates="access_token_revocations")
 
 
 class UserNotificationSetting(Base):

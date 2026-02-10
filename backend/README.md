@@ -19,6 +19,7 @@ Create `.env` in `/Users/jeonggyu/workspace/naver_apt_briefing/backend`:
 APP_ENV=dev
 APP_NAME=Naver Apt Briefing API
 APP_VERSION=0.1.0
+APP_PORT=18080
 
 DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/naver_apt_briefing
 REDIS_URL=redis://localhost:6379/0
@@ -59,18 +60,26 @@ SCHEDULER_POLL_SECONDS=20
 cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
 source .venv/bin/activate
 alembic upgrade head
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 18080
 ```
 
 Open:
-- API docs: `http://127.0.0.1:8000/docs`
-- Dashboard: `http://127.0.0.1:8000/`
+- API docs: `http://127.0.0.1:18080/docs`
+- Dashboard: `http://127.0.0.1:18080/`
 
 ## 5) Test
 ```bash
 cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
 source .venv/bin/activate
 pytest -q
+```
+
+Playwright E2E (account flow, token revocation):
+```bash
+cd /Users/jeonggyu/workspace/naver_apt_briefing/backend/e2e
+npm install
+npx playwright install chromium
+npx playwright test --config=playwright.config.ts
 ```
 
 ## 5-1) DB Migration
@@ -100,12 +109,12 @@ cp .env.example .env
 docker compose up -d --build
 
 # 3) check health
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:18080/health
 ```
 
 Open:
-- Dashboard: `http://<SERVER_IP>:8000/`
-- API docs: `http://<SERVER_IP>:8000/docs`
+- Dashboard: `http://<SERVER_IP>:18080/`
+- API docs: `http://<SERVER_IP>:18080/docs`
 
 Stop:
 ```bash
@@ -163,10 +172,11 @@ docker compose down
 - For production, run a dedicated scheduler worker.
 - `AUTO_CREATE_TABLES` is intended for local dev only (`APP_ENV=dev`).
 - Alert deduplication key: `bargain:{complex_no}:{article_no}:{deal_price_manwon}`.
+- `POST /auth/logout` revokes both refresh token and current access token (`Authorization: Bearer ...` required).
 
 ## 10) Friend Test Checklist
 1. 서버 1대 준비 (2 vCPU / 4GB RAM 이상 권장)
-2. 포트 오픈: `8000` (또는 reverse proxy로 `443`)
+2. 포트 오픈: `18080` (또는 reverse proxy로 `443`)
 3. `.env`에서 최소 아래 값 설정:
    - `AUTH_SECRET_KEY`
    - `SCHEDULER_ENABLED=true`
@@ -182,5 +192,5 @@ docker compose down
 1. 지인 테스트라도 HTTPS를 권장합니다.
 2. 간단한 구성:
    - 도메인 준비
-   - Nginx/Caddy reverse proxy로 `443 -> app:8000`
+   - Nginx/Caddy reverse proxy로 `443 -> app:18080`
    - 방화벽에서 `22/80/443`만 개방

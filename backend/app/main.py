@@ -2,6 +2,7 @@ import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
@@ -12,13 +13,20 @@ from sqlalchemy.orm import Session
 
 from app.crawler.naver_client import NaverLandClient
 from app.db import get_db, init_db
-from app.models import AuthRefreshToken, User, UserNotificationSetting, UserPreset, UserWatchComplex
+from app.models import (
+    AuthAccessTokenRevocation,
+    AuthRefreshToken,
+    User,
+    UserNotificationSetting,
+    UserPreset,
+    UserWatchComplex,
+)
 from app.services.alerts import collect_user_bargains, dispatch_user_bargain_alerts
 from app.services.analytics import detect_bargains, fetch_compare_trend, fetch_complex_trend
 from app.services.auth import (
     create_access_token,
     create_refresh_token,
-    decode_access_token,
+    decode_token,
     decode_refresh_token,
     hash_password,
     hash_token,
@@ -48,18 +56,44 @@ def _extract_bearer_token(authorization: str | None) -> str:
     return authorization.split(" ", 1)[1].strip()
 
 
+def _decode_access_token_claims(token: str) -> tuple[UUID, str, int] | None:
+    payload = decode_token(
+        token=token,
+        secret_key=settings.auth_secret_key,
+        algorithms=[settings.auth_jwt_algorithm],
+        issuer=settings.auth_jwt_issuer,
+    )
+    if payload is None or payload.get("type") != "access":
+        return None
+    try:
+        user_id = UUID(str(payload.get("sub")))
+        jti = str(payload.get("jti"))
+        exp_ts = int(payload.get("exp"))
+    except (TypeError, ValueError):
+        return None
+    if not jti:
+        return None
+    return user_id, jti, exp_ts
+
+
 def get_current_user(
     authorization: Annotated[str | None, Header()] = None,
     db: Session = Depends(get_db),
 ) -> User:
     token = _extract_bearer_token(authorization)
-    user_id = decode_access_token(
-        token=token,
-        secret_key=settings.auth_secret_key,
-        algorithm=settings.auth_jwt_algorithm,
-        issuer=settings.auth_jwt_issuer,
+    decoded = _decode_access_token_claims(token)
+    if decoded is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+    user_id, jti, _exp_ts = decoded
+
+    revoked = db.scalar(
+        select(AuthAccessTokenRevocation.id).where(
+            AuthAccessTokenRevocation.user_id == user_id,
+            AuthAccessTokenRevocation.jti == jti,
+            AuthAccessTokenRevocation.expires_at >= datetime.now(UTC),
+        )
     )
-    if user_id is None:
+    if revoked is not None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
     user = db.get(User, user_id)
@@ -332,26 +366,49 @@ def auth_refresh(
 @app.post("/auth/logout")
 def auth_logout(
     refresh_token: str = Body(..., embed=True),
+    authorization: Annotated[str | None, Header()] = None,
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
+    changed = False
+
+    if authorization and authorization.startswith("Bearer "):
+        access_token = authorization.split(" ", 1)[1].strip()
+        decoded = _decode_access_token_claims(access_token)
+        if decoded is not None:
+            user_id, jti, exp_ts = decoded
+            already_revoked = db.scalar(
+                select(AuthAccessTokenRevocation.id).where(AuthAccessTokenRevocation.jti == jti)
+            )
+            if already_revoked is None:
+                db.add(
+                    AuthAccessTokenRevocation(
+                        user_id=user_id,
+                        jti=jti,
+                        expires_at=datetime.fromtimestamp(exp_ts, tz=UTC),
+                        revoked_at=datetime.now(UTC),
+                    )
+                )
+                changed = True
+
     parsed = decode_refresh_token(
         token=refresh_token,
         secret_key=settings.auth_secret_key,
         algorithm=settings.auth_jwt_algorithm,
         issuer=settings.auth_jwt_issuer,
     )
-    if parsed is None:
-        return {"ok": True}
-    user_id, jti, _exp_ts = parsed
-
-    token_row = db.scalar(
-        select(AuthRefreshToken).where(
-            AuthRefreshToken.user_id == user_id,
-            AuthRefreshToken.jti == jti,
+    if parsed is not None:
+        user_id, jti, _exp_ts = parsed
+        token_row = db.scalar(
+            select(AuthRefreshToken).where(
+                AuthRefreshToken.user_id == user_id,
+                AuthRefreshToken.jti == jti,
+            )
         )
-    )
-    if token_row is not None and token_row.revoked_at is None and token_row.token_hash == hash_token(refresh_token):
-        token_row.revoked_at = datetime.now(UTC)
+        if token_row is not None and token_row.revoked_at is None and token_row.token_hash == hash_token(refresh_token):
+            token_row.revoked_at = datetime.now(UTC)
+            changed = True
+
+    if changed:
         db.commit()
     return {"ok": True}
 

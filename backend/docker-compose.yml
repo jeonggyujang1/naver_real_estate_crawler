@@ -24,7 +24,7 @@ services:
     env_file:
       - .env
     ports:
-      - "8000:8000"
+      - "${APP_PORT:-18080}:18080"
     depends_on:
       db:
         condition: service_healthy
