@@ -68,6 +68,22 @@ class NaverLandClient:
         }
         url = f"{endpoint}?{urlencode(params)}"
 
+        referer = f"{self.settings.naver_land_base_url}/complexes/{complex_no}"
+        headers = self._default_headers(referer=referer)
+        return self._request_json(url=url, headers=headers)
+
+    def search_complexes(self, keyword: str, limit: int = 10) -> list[dict[str, Any]]:
+        normalized_keyword = keyword.strip()
+        if len(normalized_keyword) < 2:
+            raise ValueError("keyword must be at least 2 characters")
+
+        endpoint = f"{self.settings.naver_land_base_url}/api/search"
+        url = f"{endpoint}?{urlencode({'keyword': normalized_keyword})}"
+        headers = self._default_headers(referer=f"{self.settings.naver_land_base_url}/")
+        payload = self._request_json(url=url, headers=headers)
+        return self.summarize_search_complexes(payload, limit=limit)
+
+    def _default_headers(self, referer: str) -> dict[str, str]:
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -76,12 +92,14 @@ class NaverLandClient:
             ),
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": f"{self.settings.naver_land_base_url}/complexes/{complex_no}",
+            "Referer": referer,
             "Origin": self.settings.naver_land_base_url,
         }
         if self.settings.naver_land_authorization:
             headers["Authorization"] = self.settings.naver_land_authorization
+        return headers
 
+    def _request_json(self, url: str, headers: dict[str, str]) -> dict[str, Any]:
         max_attempts = max(1, self.settings.crawler_max_retry)
 
         for attempt_index in range(max_attempts):
@@ -119,6 +137,60 @@ class NaverLandClient:
                 raise RuntimeError("Naver API returned invalid JSON") from exc
 
         raise RuntimeError("Naver API request failed after retries")
+
+    @staticmethod
+    def summarize_search_complexes(payload: dict[str, Any], limit: int = 10) -> list[dict[str, Any]]:
+        if limit < 1:
+            return []
+
+        def _extract_from_node(node: Any) -> list[dict[str, Any]]:
+            if isinstance(node, list):
+                result: list[dict[str, Any]] = []
+                for child in node:
+                    result.extend(_extract_from_node(child))
+                return result
+            if isinstance(node, dict):
+                current: list[dict[str, Any]] = []
+                complex_no = node.get("complexNo") or node.get("complexNumber")
+                complex_name = node.get("complexName") or node.get("name")
+                if complex_no and complex_name:
+                    current.append(node)
+
+                for value in node.values():
+                    current.extend(_extract_from_node(value))
+                return current
+            return []
+
+        candidates = _extract_from_node(payload)
+
+        normalized: list[dict[str, Any]] = []
+        seen_complex_nos: set[int] = set()
+        for item in candidates:
+            complex_no = item.get("complexNo") or item.get("complexNumber")
+            try:
+                complex_no_int = int(complex_no)
+            except (TypeError, ValueError):
+                continue
+            if complex_no_int in seen_complex_nos:
+                continue
+            complex_name = str(item.get("complexName") or item.get("name") or "").strip()
+            if not complex_name:
+                continue
+
+            normalized_item = {
+                "complex_no": complex_no_int,
+                "complex_name": complex_name,
+                "real_estate_type_name": item.get("realEstateTypeName") or item.get("realEstateType"),
+                "sido_name": item.get("sidoName"),
+                "gugun_name": item.get("gugunName"),
+                "dong_name": item.get("dongName"),
+            }
+            normalized.append(normalized_item)
+            seen_complex_nos.add(complex_no_int)
+            if len(normalized) >= limit:
+                break
+
+        return normalized
 
     @staticmethod
     def summarize_articles(payload: dict[str, Any]) -> list[dict[str, Any]]:
