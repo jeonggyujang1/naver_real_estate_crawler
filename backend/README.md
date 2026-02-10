@@ -88,6 +88,30 @@ alembic current
 alembic revision -m "add_xxx"
 ```
 
+## 5-2) Beta Deployment (Docker Compose)
+```bash
+cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
+
+# 1) prepare env
+cp .env.example .env
+# edit .env values (AUTH_SECRET_KEY, SMTP, TELEGRAM, scheduler targets)
+
+# 2) start services
+docker compose up -d --build
+
+# 3) check health
+curl http://127.0.0.1:8000/health
+```
+
+Open:
+- Dashboard: `http://<SERVER_IP>:8000/`
+- API docs: `http://<SERVER_IP>:8000/docs`
+
+Stop:
+```bash
+docker compose down
+```
+
 ## 6) Core Endpoints
 - `POST /auth/register`
 - `POST /auth/login`
@@ -139,3 +163,24 @@ alembic revision -m "add_xxx"
 - For production, run a dedicated scheduler worker.
 - `AUTO_CREATE_TABLES` is intended for local dev only (`APP_ENV=dev`).
 - Alert deduplication key: `bargain:{complex_no}:{article_no}:{deal_price_manwon}`.
+
+## 10) Friend Test Checklist
+1. 서버 1대 준비 (2 vCPU / 4GB RAM 이상 권장)
+2. 포트 오픈: `8000` (또는 reverse proxy로 `443`)
+3. `.env`에서 최소 아래 값 설정:
+   - `AUTH_SECRET_KEY`
+   - `SCHEDULER_ENABLED=true`
+   - `SCHEDULER_TIMES_CSV`, `SCHEDULER_COMPLEX_NOS_CSV`
+4. 알림 테스트:
+   - Telegram: 봇 토큰 + chat_id 설정 후 `지금 알림 발송`
+   - Email: SMTP 설정 후 `지금 알림 발송`
+5. 운영 점검:
+   - `docker compose logs -f app`
+   - DB 백업 정책(일 1회) 설정
+
+## 11) Public Access Recommendation
+1. 지인 테스트라도 HTTPS를 권장합니다.
+2. 간단한 구성:
+   - 도메인 준비
+   - Nginx/Caddy reverse proxy로 `443 -> app:8000`
+   - 방화벽에서 `22/80/443`만 개방
