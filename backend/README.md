@@ -135,7 +135,7 @@ docker compose down
 - `PUT /me/notification-settings`
 - `GET /me/alerts/bargains`
 - `POST /me/alerts/bargains/dispatch`
-- `POST /crawler/ingest/{complex_no}`
+- `POST /crawler/ingest/{complex_no}?page=1&max_pages=1`
 - `GET /analytics/trend/{complex_no}`
 - `GET /analytics/compare?complex_nos=123&complex_nos=456`
 - `GET /analytics/bargains/{complex_no}`
@@ -173,6 +173,9 @@ docker compose down
 - `AUTO_CREATE_TABLES` is intended for local dev only (`APP_ENV=dev`).
 - Alert deduplication key: `bargain:{complex_no}:{article_no}:{deal_price_manwon}`.
 - `POST /auth/logout` revokes both refresh token and current access token (`Authorization: Bearer ...` required).
+- Crawler retries transient API/network failures up to `CRAWLER_MAX_RETRY`.
+- If Naver API returns `TOO_MANY_REQUESTS (429)`, set `NAVER_LAND_AUTHORIZATION` from browser request header.
+- Scheduled crawler uses multi-page ingest (`page=1`, `max_pages=10`) for better listing coverage.
 
 ## 10) Friend Test Checklist
 1. 서버 1대 준비 (2 vCPU / 4GB RAM 이상 권장)

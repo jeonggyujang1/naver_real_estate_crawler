@@ -119,6 +119,7 @@ class CrawlScheduler:
                         settings=self.settings,
                         complex_no=complex_no,
                         page=1,
+                        max_pages=10,
                     )
                     logger.info("Scheduled ingest success: %s", result)
                     try:

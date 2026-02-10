@@ -195,13 +195,20 @@ def crawler_articles(complex_no: int, page: int = 1) -> dict[str, object]:
 def crawler_ingest(
     complex_no: int,
     page: int = 1,
+    max_pages: int = 1,
     db: Session = Depends(get_db),
 ) -> dict[str, int]:
+    if page < 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="page must be >= 1")
+    if max_pages < 1 or max_pages > 20:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="max_pages must be between 1 and 20")
+
     return ingest_complex_snapshot(
         db=db,
         settings=settings,
         complex_no=complex_no,
         page=page,
+        max_pages=max_pages,
     )
 
 
