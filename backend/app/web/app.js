@@ -61,6 +61,49 @@ function renderUserBadge(text) {
   qs("#userBadge").textContent = text;
 }
 
+function extractComplexNoFromInput(raw) {
+  const value = (raw || "").trim();
+  if (!value) return null;
+
+  // Case 1: plain numeric input (e.g. "2977")
+  if (/^\d+$/.test(value)) {
+    return Number(value);
+  }
+
+  // Case 2: full Naver URL that includes /complexes/{complexNo}
+  const pathMatch = value.match(/\/complexes\/(\d+)/);
+  if (pathMatch) {
+    return Number(pathMatch[1]);
+  }
+
+  // Case 3: query string style (complexNo / selectedComplexNo)
+  try {
+    const parsed = new URL(value);
+    const q1 = parsed.searchParams.get("complexNo");
+    if (q1 && /^\d+$/.test(q1)) return Number(q1);
+    const q2 = parsed.searchParams.get("selectedComplexNo");
+    if (q2 && /^\d+$/.test(q2)) return Number(q2);
+  } catch (_e) {
+    // Ignore URL parse errors; fallback regex below.
+  }
+
+  const queryMatch = value.match(/(?:complexNo|selectedComplexNo)=([0-9]+)/);
+  if (queryMatch) {
+    return Number(queryMatch[1]);
+  }
+  return null;
+}
+
+async function parseComplexUrl() {
+  const raw = qs("#watchComplexUrl").value;
+  const complexNo = extractComplexNoFromInput(raw);
+  if (!complexNo) {
+    throw new Error("유효한 네이버 단지 URL 또는 complexNo를 입력해주세요.");
+  }
+  qs("#watchComplexNo").value = String(complexNo);
+  setStatus("#authStatus", `complexNo 추출 완료: ${complexNo}`);
+}
+
 async function register() {
   const email = qs("#email").value.trim();
   const password = qs("#password").value;
@@ -404,6 +447,7 @@ bind("#registerBtn", register);
 bind("#loginBtn", login);
 bind("#meBtn", me);
 bind("#logoutBtn", logout);
+bind("#parseComplexUrlBtn", parseComplexUrl);
 bind("#addWatchBtn", addWatchComplex);
 bind("#loadWatchBtn", loadWatchComplexes);
 bind("#loadLiveWatchBtn", loadLiveWatchComplexes);

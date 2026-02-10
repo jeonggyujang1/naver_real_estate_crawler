@@ -89,3 +89,16 @@ test("me button without login shows auth required message", async ({ page }) => 
   await page.click("#meBtn");
   await expect(page.locator("#authStatus")).toContainText("Authorization header is required");
 });
+
+test("extract complexNo from naver url input", async ({ page }) => {
+  await openFreshPage(page);
+
+  await page.fill(
+    "#watchComplexUrl",
+    "https://new.land.naver.com/complexes/2977?ms=37.55,127.03,17&a=APT&b=A1&e=RETAIL"
+  );
+  await page.click("#parseComplexUrlBtn");
+
+  await expect(page.locator("#authStatus")).toContainText("complexNo 추출 완료: 2977");
+  await expect(page.locator("#watchComplexNo")).toHaveValue("2977");
+});
