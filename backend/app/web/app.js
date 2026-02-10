@@ -161,6 +161,62 @@ async function loadWatchComplexes() {
   });
 }
 
+function renderLiveWatchListings(items) {
+  const root = qs("#liveWatchList");
+  root.innerHTML = "";
+  if (!items.length) {
+    root.innerHTML = '<div class="muted">실시간 조회 대상 단지가 없습니다.</div>';
+    return;
+  }
+
+  items.forEach((group) => {
+    const block = document.createElement("div");
+    block.style.marginBottom = "10px";
+
+    const title = document.createElement("div");
+    title.className = "pill";
+    title.textContent = `${group.complex_no} ${group.complex_name || ""} (매물 ${group.article_count || 0}건)`.trim();
+    block.appendChild(title);
+
+    if (group.error) {
+      const errorLine = document.createElement("div");
+      errorLine.className = "muted";
+      errorLine.textContent = `조회 실패: ${group.error}`;
+      block.appendChild(errorLine);
+      root.appendChild(block);
+      return;
+    }
+
+    const articles = Array.isArray(group.articles) ? group.articles : [];
+    if (!articles.length) {
+      const emptyLine = document.createElement("div");
+      emptyLine.className = "muted";
+      emptyLine.textContent = "표시할 매물이 없습니다.";
+      block.appendChild(emptyLine);
+      root.appendChild(block);
+      return;
+    }
+
+    articles.forEach((article) => {
+      const line = document.createElement("div");
+      line.className = "muted";
+      line.textContent =
+        `${article.article_name || "-"} | ${article.trade_type || "-"} | ` +
+        `${article.price || "-"} | ${article.floor_info || "-"}`;
+      block.appendChild(line);
+    });
+    root.appendChild(block);
+  });
+}
+
+async function loadLiveWatchComplexes() {
+  const page = Number(qs("#liveWatchPage").value || "1");
+  const maxPerComplex = Number(qs("#liveWatchMax").value || "10");
+  const data = await api(`/me/watch-complexes/live?page=${page}&max_per_complex=${maxPerComplex}`);
+  renderLiveWatchListings(data.items || []);
+  setStatus("#authStatus", `실시간 매물 조회 완료: ${data.count}개 단지`);
+}
+
 async function ingestNow() {
   const complexNo = Number(qs("#ingestComplexNo").value);
   const page = Number(qs("#ingestPage").value || "1");
@@ -350,6 +406,7 @@ bind("#meBtn", me);
 bind("#logoutBtn", logout);
 bind("#addWatchBtn", addWatchComplex);
 bind("#loadWatchBtn", loadWatchComplexes);
+bind("#loadLiveWatchBtn", loadLiveWatchComplexes);
 bind("#ingestBtn", ingestNow);
 bind("#metaBtn", loadMeta);
 bind("#loadNotifyBtn", loadNotificationSettings);

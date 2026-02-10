@@ -445,6 +445,67 @@ def me_watch_complexes(
     }
 
 
+@app.get("/me/watch-complexes/live")
+def me_watch_complexes_live(
+    page: int = 1,
+    max_per_complex: int = 10,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    if page < 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="page must be >= 1")
+    if max_per_complex < 1 or max_per_complex > 30:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="max_per_complex must be between 1 and 30")
+
+    watches = db.scalars(
+        select(UserWatchComplex)
+        .where(
+            UserWatchComplex.user_id == current_user.id,
+            UserWatchComplex.enabled.is_(True),
+        )
+        .order_by(UserWatchComplex.created_at.desc())
+    ).all()
+    if not watches:
+        return {
+            "count": 0,
+            "page": page,
+            "max_per_complex": max_per_complex,
+            "items": [],
+        }
+
+    client = NaverLandClient(settings=settings)
+    items: list[dict[str, Any]] = []
+    for watch in watches:
+        try:
+            payload = client.fetch_complex_articles(complex_no=watch.complex_no, page=page)
+            summaries = client.summarize_articles(payload)[:max_per_complex]
+            items.append(
+                {
+                    "complex_no": watch.complex_no,
+                    "complex_name": watch.complex_name,
+                    "article_count": len(summaries),
+                    "articles": summaries,
+                }
+            )
+        except Exception as exc:  # pragma: no cover - external API/network branch
+            items.append(
+                {
+                    "complex_no": watch.complex_no,
+                    "complex_name": watch.complex_name,
+                    "article_count": 0,
+                    "articles": [],
+                    "error": str(exc),
+                }
+            )
+
+    return {
+        "count": len(items),
+        "page": page,
+        "max_per_complex": max_per_complex,
+        "items": items,
+    }
+
+
 @app.post("/me/watch-complexes")
 def me_add_watch_complex(
     complex_no: int = Body(..., embed=True),
