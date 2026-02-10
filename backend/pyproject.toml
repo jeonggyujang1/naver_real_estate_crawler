@@ -1,0 +1,31 @@
+[project]
+name = "naver-apt-briefing-backend"
+version = "0.1.0"
+description = "Backend for apartment listing trend analysis"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0,<1.0.0",
+  "uvicorn[standard]>=0.30.0,<1.0.0",
+  "pydantic-settings>=2.6.0,<3.0.0",
+  "sqlalchemy>=2.0.36,<3.0.0",
+  "psycopg[binary]>=3.2.3,<4.0.0",
+  "pyjwt>=2.10.1,<3.0.0",
+  "argon2-cffi>=23.1.0,<24.0.0",
+  "alembic>=1.14.1,<2.0.0"
+]
+
+[tool.uvicorn]
+factory = false
+host = "0.0.0.0"
+port = 8000
+reload = true
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.4,<9.0.0"
+]
