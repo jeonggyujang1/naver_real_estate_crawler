@@ -102,3 +102,35 @@ test("extract complexNo from naver url input", async ({ page }) => {
   await expect(page.locator("#authStatus")).toContainText("complexNo 추출 완료: 2977");
   await expect(page.locator("#watchComplexNo")).toHaveValue("2977");
 });
+
+test("complex name autocomplete fills complex number and name", async ({ page }) => {
+  await openFreshPage(page);
+
+  await page.route("**/crawler/search/complexes**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        keyword: "래미안",
+        count: 1,
+        items: [
+          {
+            complex_no: 2977,
+            complex_name: "래미안 대치 팰리스",
+            real_estate_type_name: "아파트",
+            sido_name: "서울시",
+            gugun_name: "강남구",
+            dong_name: "대치동",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.fill("#watchComplexKeyword", "래미안");
+  await expect(page.locator("#watchComplexSearchList")).toContainText("래미안 대치 팰리스");
+
+  await page.click("#watchComplexSearchList button");
+  await expect(page.locator("#watchComplexNo")).toHaveValue("2977");
+  await expect(page.locator("#watchComplexName")).toHaveValue("래미안 대치 팰리스");
+});

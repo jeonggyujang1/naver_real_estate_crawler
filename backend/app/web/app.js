@@ -3,6 +3,8 @@ const state = {
   refreshToken: window.localStorage.getItem("nab_refresh_token") || "",
   trendChart: null,
   compareChart: null,
+  complexSearchDebounceTimer: null,
+  complexSearchRequestId: 0,
 };
 
 const qs = (selector) => document.querySelector(selector);
@@ -102,6 +104,79 @@ async function parseComplexUrl() {
   }
   qs("#watchComplexNo").value = String(complexNo);
   setStatus("#authStatus", `complexNo 추출 완료: ${complexNo}`);
+}
+
+function renderComplexSearchResults(items, hasKeyword = false) {
+  const root = qs("#watchComplexSearchList");
+  root.innerHTML = "";
+
+  if (!items.length) {
+    if (hasKeyword) {
+      root.innerHTML = '<div class="muted">검색 결과가 없습니다.</div>';
+    }
+    return;
+  }
+
+  items.forEach((item) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "alt";
+    btn.style.width = "100%";
+    btn.style.textAlign = "left";
+    btn.style.marginBottom = "6px";
+
+    const address = [item.sido_name, item.gugun_name, item.dong_name].filter(Boolean).join(" ");
+    const typeName = item.real_estate_type_name ? ` (${item.real_estate_type_name})` : "";
+    btn.textContent = `${item.complex_name}${typeName} | ${item.complex_no}${address ? ` | ${address}` : ""}`;
+
+    btn.addEventListener("click", () => {
+      qs("#watchComplexNo").value = String(item.complex_no);
+      qs("#watchComplexName").value = item.complex_name || "";
+      setStatus("#authStatus", `단지 선택 완료: ${item.complex_name} (${item.complex_no})`);
+    });
+
+    root.appendChild(btn);
+  });
+}
+
+async function performComplexSearch({ isAuto = false } = {}) {
+  const keyword = qs("#watchComplexKeyword").value.trim();
+  if (keyword.length < 2) {
+    renderComplexSearchResults([], false);
+    if (!isAuto) {
+      throw new Error("단지명은 2자 이상 입력해주세요.");
+    }
+    return;
+  }
+
+  const requestId = ++state.complexSearchRequestId;
+  const query = new URLSearchParams({
+    keyword,
+    limit: "8",
+  });
+  const data = await api(`/crawler/search/complexes?${query.toString()}`);
+  if (requestId !== state.complexSearchRequestId) {
+    return;
+  }
+
+  renderComplexSearchResults(data.items || [], true);
+  setStatus("#authStatus", `단지 검색 완료: ${data.count}건`);
+}
+
+async function searchComplexes() {
+  await performComplexSearch({ isAuto: false });
+}
+
+function onWatchComplexKeywordInput() {
+  if (state.complexSearchDebounceTimer) {
+    clearTimeout(state.complexSearchDebounceTimer);
+  }
+  state.complexSearchDebounceTimer = window.setTimeout(() => {
+    performComplexSearch({ isAuto: true }).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      setStatus("#authStatus", message);
+    });
+  }, 350);
 }
 
 async function register() {
@@ -447,6 +522,7 @@ bind("#registerBtn", register);
 bind("#loginBtn", login);
 bind("#meBtn", me);
 bind("#logoutBtn", logout);
+bind("#searchComplexBtn", searchComplexes);
 bind("#parseComplexUrlBtn", parseComplexUrl);
 bind("#addWatchBtn", addWatchComplex);
 bind("#loadWatchBtn", loadWatchComplexes);
@@ -460,6 +536,7 @@ bind("#loadTrendBtn", loadTrend);
 bind("#loadCompareBtn", loadCompare);
 bind("#loadBargainBtn", loadBargains);
 bind("#loadMyBargainBtn", loadMyBargainAlerts);
+qs("#watchComplexKeyword").addEventListener("input", onWatchComplexKeywordInput);
 
 if (state.token) {
   me().catch(() => {
