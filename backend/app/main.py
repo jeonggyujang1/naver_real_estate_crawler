@@ -213,6 +213,30 @@ def crawler_articles(complex_no: int, page: int = 1) -> dict[str, object]:
     }
 
 
+@app.get("/crawler/search/complexes")
+def crawler_search_complexes(
+    keyword: str = Query(..., min_length=2),
+    limit: int = 10,
+) -> dict[str, object]:
+    normalized_keyword = keyword.strip()
+    if len(normalized_keyword) < 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="keyword must be at least 2 characters")
+    if limit < 1 or limit > 20:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="limit must be between 1 and 20")
+
+    client = NaverLandClient(settings=settings)
+    try:
+        items = client.search_complexes(keyword=normalized_keyword, limit=limit)
+    except RuntimeError as exc:
+        raise _map_crawler_runtime_error(exc) from exc
+
+    return {
+        "keyword": normalized_keyword,
+        "count": len(items),
+        "items": items,
+    }
+
+
 @app.post("/crawler/ingest/{complex_no}")
 def crawler_ingest(
     complex_no: int,
