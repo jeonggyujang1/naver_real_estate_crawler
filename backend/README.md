@@ -1,81 +1,156 @@
-# Naver Apt Briefing Backend
+# Naver Apt Briefing Backend (한국어 가이드)
 
-## 1) Requirements
-- Python 3.11+
-- PostgreSQL 14+
+네이버 부동산 매물 데이터를 수집/저장하고, 관심 단지 기준으로 추세/급매 후보/알림을 제공하는 백엔드 서비스입니다.
 
-## 2) Install
+## 1) 이 프로젝트로 할 수 있는 것
+- 계정 관리: 회원가입, 로그인, 토큰 재발급, 로그아웃
+- 관심 단지 관리: 단지명 검색 자동완성, 관심 단지 등록/조회
+- 매물 수집: 단지별 매물 스냅샷 수집(수동/스케줄)
+- 분석: 단지 추세 차트, 단지 비교 차트, 급매 후보 탐지
+- 알림: 이메일/텔레그램 급매 알림 발송
+
+## 2) 문서 맵
+- 배포 의사결정 문서: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/DEPLOYMENT_DECISION_KR.md`
+- 기술 아키텍처 문서: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/TECHNICAL_ARCHITECTURE_KR.md`
+- 웹 테스트 가이드: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/WEB_TEST_GUIDE_KR.md`
+
+## 3) 빠른 시작 (Docker Compose 권장)
+가장 쉬운 실행 방법입니다.
+
+### 3-1) 준비물
+- Docker Desktop 최신 버전
+- macOS/Linux 터미널
+
+### 3-2) 실행
+```bash
+cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
+cp .env.example .env
+```
+
+`.env` 파일을 먼저 수정한 뒤:
+
+```bash
+cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
+docker compose up -d --build
+```
+
+확인:
+```bash
+curl http://127.0.0.1:18080/health
+```
+
+정상 응답 예:
+```json
+{"status":"ok","env":"prod"}
+```
+
+열기:
+- 대시보드: `http://127.0.0.1:18080/`
+- API 문서: `http://127.0.0.1:18080/docs`
+
+중지:
+```bash
+cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
+docker compose down
+```
+
+## 4) `.env` 설정 가이드 (초보자용)
+경로: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/.env`
+
+### 4-1) 최소 필수값
+아래 4개는 먼저 채우세요.
+
+```env
+APP_ENV=prod
+APP_PORT=18080
+AUTH_SECRET_KEY=길고_랜덤한_비밀값_반드시_변경
+DATABASE_URL=postgresql+psycopg://postgres:postgres@db:5432/naver_apt_briefing
+```
+
+주의:
+- Docker Compose로 실행할 때 `DATABASE_URL` 호스트는 `localhost`가 아니라 `db`를 써야 합니다.
+
+### 4-2) 네이버 크롤링 필수값
+429(요청 한도) 회피를 위해 아래 두 값을 넣는 것을 권장합니다.
+
+```env
+NAVER_LAND_AUTHORIZATION=Bearer ...
+NAVER_LAND_COOKIE=NNB=...; NID_AUT=...; ...
+CRAWLER_MAX_RETRY=1
+```
+
+핵심 규칙:
+- `NAVER_LAND_AUTHORIZATION`에는 `Bearer` 포함 전체 문자열을 넣습니다.
+- `NAVER_LAND_COOKIE`에는 Request Headers의 `Cookie` 전체 문자열을 넣습니다.
+- 둘 다 세션 만료 시 다시 갱신해야 합니다.
+
+### 4-3) 네이버 값 추출 방법
+1. Chrome 로그인 후 `https://new.land.naver.com` 접속
+2. 단지 페이지를 연 뒤 `F12 -> Network`
+3. `api/search` 또는 `api/articles/complex` 요청 클릭
+4. `Request Headers`에서 복사
+   - `Authorization` -> `NAVER_LAND_AUTHORIZATION`
+   - `Cookie` -> `NAVER_LAND_COOKIE`
+5. 반영 후 컨테이너 재생성:
+
+```bash
+cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
+docker compose up -d --force-recreate app
+```
+
+### 4-4) 스케줄러 설정
+```env
+SCHEDULER_ENABLED=true
+SCHEDULER_TIMEZONE=Asia/Seoul
+SCHEDULER_TIMES_CSV=09:00,18:00
+SCHEDULER_COMPLEX_NOS_CSV=2977,23620
+SCHEDULER_POLL_SECONDS=20
+```
+
+설명:
+- `SCHEDULER_ENABLED=true`면 API 프로세스 내부 스케줄러가 동작합니다.
+- 운영에서 앱이 내려가면 스케줄도 함께 멈춥니다.
+
+### 4-5) 이메일/텔레그램 알림 설정
+이메일:
+```env
+SMTP_ENABLED=true
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=...
+SMTP_PASSWORD=...
+SMTP_SENDER_EMAIL=...
+SMTP_USE_TLS=true
+```
+
+텔레그램:
+```env
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=<BOT_TOKEN>
+TELEGRAM_API_BASE_URL=https://api.telegram.org
+```
+
+chat_id는 로그인 후 대시보드의 알림 설정 화면에서 입력합니다.
+
+## 5) 로컬 개발 실행 (Python venv)
 ```bash
 cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-```
-
-## 3) Environment
-Create `.env` in `/Users/jeonggyu/workspace/naver_apt_briefing/backend`:
-
-```env
-APP_ENV=dev
-APP_NAME=Naver Apt Briefing API
-APP_VERSION=0.1.0
-APP_PORT=18080
-
-DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/naver_apt_briefing
-REDIS_URL=redis://localhost:6379/0
-
-AUTO_CREATE_TABLES=false
-AUTH_SECRET_KEY=replace-with-long-random-secret
-AUTH_JWT_ALGORITHM=HS256
-AUTH_JWT_ISSUER=naver-apt-briefing
-AUTH_ACCESS_TOKEN_TTL_MINUTES=15
-AUTH_REFRESH_TOKEN_TTL_DAYS=30
-
-NAVER_LAND_BASE_URL=https://new.land.naver.com
-NAVER_LAND_AUTHORIZATION=
-NAVER_LAND_COOKIE=
-
-# Email (SMTP)
-SMTP_ENABLED=false
-SMTP_HOST=
-SMTP_PORT=587
-SMTP_USERNAME=
-SMTP_PASSWORD=
-SMTP_SENDER_EMAIL=
-SMTP_USE_TLS=true
-
-# Telegram
-TELEGRAM_ENABLED=false
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_API_BASE_URL=https://api.telegram.org
-
-SCHEDULER_ENABLED=false
-SCHEDULER_TIMEZONE=Asia/Seoul
-SCHEDULER_TIMES_CSV=09:00,18:00
-SCHEDULER_COMPLEX_NOS_CSV=12345,23456
-SCHEDULER_POLL_SECONDS=20
-```
-
-## 4) Run
-```bash
-cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
-source .venv/bin/activate
 alembic upgrade head
 uvicorn app.main:app --reload --port 18080
 ```
 
-Open:
-- API docs: `http://127.0.0.1:18080/docs`
-- Dashboard: `http://127.0.0.1:18080/`
-
-## 5) Test
+## 6) 테스트
+### 6-1) 백엔드 단위/통합 테스트
 ```bash
 cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
 source .venv/bin/activate
 pytest -q
 ```
 
-Playwright E2E (account flow, token revocation):
+### 6-2) Playwright E2E
 ```bash
 cd /Users/jeonggyu/workspace/naver_apt_briefing/backend/e2e
 npm install
@@ -83,141 +158,76 @@ npx playwright install chromium
 npx playwright test --config=playwright.config.ts
 ```
 
-## 5-1) DB Migration
-```bash
-cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
-source .venv/bin/activate
-
-# apply latest schema
-alembic upgrade head
-
-# check current revision
-alembic current
-
-# create new revision (when model changes)
-alembic revision -m "add_xxx"
-```
-
-## 5-2) Beta Deployment (Docker Compose)
-```bash
-cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
-
-# 1) prepare env
-cp .env.example .env
-# edit .env values (AUTH_SECRET_KEY, SMTP, TELEGRAM, scheduler targets)
-
-# 2) start services
-docker compose up -d --build
-
-# 3) check health
-curl http://127.0.0.1:18080/health
-```
-
-Open:
-- Dashboard: `http://<SERVER_IP>:18080/`
-- API docs: `http://<SERVER_IP>:18080/docs`
-
-Stop:
-```bash
-docker compose down
-```
-
-## 6) Core Endpoints
+## 7) 핵심 API 요약
+인증:
 - `POST /auth/register`
 - `POST /auth/login`
 - `POST /auth/refresh`
 - `POST /auth/logout`
 - `GET /me`
-- `POST /me/watch-complexes`
+
+관심 단지/프리셋:
 - `GET /me/watch-complexes`
-- `POST /me/presets`
+- `GET /me/watch-complexes/live`
+- `POST /me/watch-complexes`
 - `GET /me/presets`
+- `POST /me/presets`
+
+크롤링/분석:
+- `GET /crawler/search/complexes`
+- `GET /crawler/articles/{complex_no}`
+- `POST /crawler/ingest/{complex_no}`
+- `GET /analytics/trend/{complex_no}`
+- `GET /analytics/compare`
+- `GET /analytics/bargains/{complex_no}`
+
+알림:
 - `GET /me/notification-settings`
 - `PUT /me/notification-settings`
 - `GET /me/alerts/bargains`
 - `POST /me/alerts/bargains/dispatch`
-- `POST /crawler/ingest/{complex_no}?page=1&max_pages=1`
-- `GET /analytics/trend/{complex_no}`
-- `GET /analytics/compare?complex_nos=123&complex_nos=456`
-- `GET /analytics/bargains/{complex_no}`
 
-## 7) Telegram Bot Setup Guide
-1. Telegram 앱에서 `@BotFather`를 열고 `/newbot` 실행
-2. 봇 이름/아이디를 입력하고 발급된 Bot Token 저장
-3. 만든 봇과 대화를 열어 `/start` 1회 전송
-4. 아래 URL을 브라우저로 호출:
-   - `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
-5. 응답 JSON에서 `message.chat.id` 값을 확인해 `telegram_chat_id`로 저장
-6. `.env`에 아래 값 설정:
-   - `TELEGRAM_ENABLED=true`
-   - `TELEGRAM_BOT_TOKEN=<YOUR_BOT_TOKEN>`
-7. 로그인 후 대시보드에서:
-   - `텔레그램 사용` 체크
-   - `chat_id` 입력
-   - `설정 저장`
-   - `지금 알림 발송`으로 테스트
+## 8) 초보자용 점검 시나리오 (10분)
+1. 회원가입/로그인
+2. 단지명 검색(`래미안`) 후 관심 단지 등록
+3. `POST /crawler/ingest/{complex_no}`로 1회 수집
+4. 추세/비교/급매 API 호출
+5. 알림 설정 저장 후 `지금 알림 발송`
 
-## 8) Email Setup Guide
-1. SMTP 계정을 준비 (Gmail, Naver Works, SendGrid, SES 등)
-2. `.env`에 SMTP 값 입력:
-   - `SMTP_ENABLED=true`
-   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_SENDER_EMAIL`
-3. 로그인 후 대시보드에서:
-   - `이메일 사용` 체크
-   - 알림 이메일 입력
-   - `설정 저장`
-   - `지금 알림 발송`으로 테스트
+## 9) 자주 발생하는 문제
+### 문제 A: `"네이버 부동산 요청 한도에 도달했습니다"`
+조치:
+1. `NAVER_LAND_AUTHORIZATION`, `NAVER_LAND_COOKIE` 재발급
+2. `CRAWLER_MAX_RETRY=1`로 낮춰 테스트
+3. `docker compose up -d --force-recreate app`
 
-## 9) Notes
-- Scheduler works only while API server is running.
-- For production, run a dedicated scheduler worker.
-- `AUTO_CREATE_TABLES` is intended for local dev only (`APP_ENV=dev`).
-- Alert deduplication key: `bargain:{complex_no}:{article_no}:{deal_price_manwon}`.
-- `POST /auth/logout` revokes both refresh token and current access token (`Authorization: Bearer ...` required).
-- Crawler retries transient API/network failures up to `CRAWLER_MAX_RETRY`.
-- If Naver API returns `TOO_MANY_REQUESTS (429)`, set `NAVER_LAND_AUTHORIZATION` and `NAVER_LAND_COOKIE` from browser request headers.
-- Scheduled crawler uses multi-page ingest (`page=1`, `max_pages=10`) for better listing coverage.
+### 문제 B: `Invalid HTTP request received`
+원인:
+- `curl` 인코딩/따옴표 깨짐
+조치:
+```bash
+curl -G "http://127.0.0.1:18080/crawler/search/complexes" \
+  --data-urlencode "keyword=래미안" \
+  --data-urlencode "limit=5"
+```
 
-## 10) Friend Test Checklist
-1. 서버 1대 준비 (2 vCPU / 4GB RAM 이상 권장)
-2. 포트 오픈: `18080` (또는 reverse proxy로 `443`)
-3. `.env`에서 최소 아래 값 설정:
-   - `AUTH_SECRET_KEY`
-   - `SCHEDULER_ENABLED=true`
-   - `SCHEDULER_TIMES_CSV`, `SCHEDULER_COMPLEX_NOS_CSV`
-4. 알림 테스트:
-   - Telegram: 봇 토큰 + chat_id 설정 후 `지금 알림 발송`
-   - Email: SMTP 설정 후 `지금 알림 발송`
-5. 운영 점검:
-   - `docker compose logs -f app`
-   - DB 백업 정책(일 1회) 설정
+### 문제 C: 422 Unprocessable Entity
+원인:
+- 필수 파라미터 누락 (예: `keyword`)
+조치:
+- API 문서(`/docs`)에서 파라미터 형식 확인
 
-## 11) Public Access Recommendation
-1. 지인 테스트라도 HTTPS를 권장합니다.
-2. 간단한 구성:
-   - 도메인 준비
-   - Nginx/Caddy reverse proxy로 `443 -> app:18080`
-   - 방화벽에서 `22/80/443`만 개방
+## 10) 운영 메모
+- 로그 확인:
+```bash
+cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
+docker compose logs -f app
+```
 
-## 12) Naver Authorization/Cookie Extraction (429 Troubleshooting)
-1. Chrome에서 네이버 로그인 후 `https://new.land.naver.com` 접속
-2. 아무 단지 페이지(예: `/complexes/2977`)를 연 상태에서 `F12` -> `Network`
-3. `api/articles/complex` 또는 `api/search` 요청 1개 선택
-4. `Request Headers`에서 아래 2개 값을 복사:
-   - `Authorization` -> `.env`의 `NAVER_LAND_AUTHORIZATION`
-   - `Cookie` -> `.env`의 `NAVER_LAND_COOKIE`
-5. 값 입력 후 재시작:
-   ```bash
-   cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
-   docker compose up -d --force-recreate app
-   ```
-6. 확인:
-   ```bash
-   curl -G "http://127.0.0.1:18080/crawler/search/complexes" \
-     --data-urlencode "keyword=래미안" \
-     --data-urlencode "limit=5"
-   ```
+- 운영 시 필수:
+  - `AUTH_SECRET_KEY` 반드시 변경
+  - DB 백업(일 1회 이상)
+  - HTTPS(리버스 프록시) 적용
 
-Tips:
-- `Authorization`/`Cookie`는 세션 만료 시 다시 갱신해야 합니다.
-- 429가 반복되면 `SCHEDULER_ENABLED=false`, `CRAWLER_MAX_RETRY=1`로 두고 수동 테스트를 먼저 통과시키세요.
+- 현재 스케줄러는 앱 내부 동작:
+  - 운영 안정화 단계에서 크롤링 워커 분리를 권장
