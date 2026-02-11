@@ -33,6 +33,7 @@ AUTH_REFRESH_TOKEN_TTL_DAYS=30
 
 NAVER_LAND_BASE_URL=https://new.land.naver.com
 NAVER_LAND_AUTHORIZATION=
+NAVER_LAND_COOKIE=
 
 # Email (SMTP)
 SMTP_ENABLED=false
@@ -174,7 +175,7 @@ docker compose down
 - Alert deduplication key: `bargain:{complex_no}:{article_no}:{deal_price_manwon}`.
 - `POST /auth/logout` revokes both refresh token and current access token (`Authorization: Bearer ...` required).
 - Crawler retries transient API/network failures up to `CRAWLER_MAX_RETRY`.
-- If Naver API returns `TOO_MANY_REQUESTS (429)`, set `NAVER_LAND_AUTHORIZATION` from browser request header.
+- If Naver API returns `TOO_MANY_REQUESTS (429)`, set `NAVER_LAND_AUTHORIZATION` and `NAVER_LAND_COOKIE` from browser request headers.
 - Scheduled crawler uses multi-page ingest (`page=1`, `max_pages=10`) for better listing coverage.
 
 ## 10) Friend Test Checklist
@@ -197,3 +198,26 @@ docker compose down
    - 도메인 준비
    - Nginx/Caddy reverse proxy로 `443 -> app:18080`
    - 방화벽에서 `22/80/443`만 개방
+
+## 12) Naver Authorization/Cookie Extraction (429 Troubleshooting)
+1. Chrome에서 네이버 로그인 후 `https://new.land.naver.com` 접속
+2. 아무 단지 페이지(예: `/complexes/2977`)를 연 상태에서 `F12` -> `Network`
+3. `api/articles/complex` 또는 `api/search` 요청 1개 선택
+4. `Request Headers`에서 아래 2개 값을 복사:
+   - `Authorization` -> `.env`의 `NAVER_LAND_AUTHORIZATION`
+   - `Cookie` -> `.env`의 `NAVER_LAND_COOKIE`
+5. 값 입력 후 재시작:
+   ```bash
+   cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
+   docker compose up -d --force-recreate app
+   ```
+6. 확인:
+   ```bash
+   curl -G "http://127.0.0.1:18080/crawler/search/complexes" \
+     --data-urlencode "keyword=래미안" \
+     --data-urlencode "limit=5"
+   ```
+
+Tips:
+- `Authorization`/`Cookie`는 세션 만료 시 다시 갱신해야 합니다.
+- 429가 반복되면 `SCHEDULER_ENABLED=false`, `CRAWLER_MAX_RETRY=1`로 두고 수동 테스트를 먼저 통과시키세요.
