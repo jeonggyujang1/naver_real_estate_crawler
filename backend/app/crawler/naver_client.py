@@ -97,6 +97,8 @@ class NaverLandClient:
         }
         if self.settings.naver_land_authorization:
             headers["Authorization"] = self.settings.naver_land_authorization
+        if self.settings.naver_land_cookie:
+            headers["Cookie"] = self.settings.naver_land_cookie
         return headers
 
     def _request_json(self, url: str, headers: dict[str, str]) -> dict[str, Any]:

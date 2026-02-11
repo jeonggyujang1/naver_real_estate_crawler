@@ -115,3 +115,12 @@ def test_summarize_search_complexes_handles_nested_payload_shape() -> None:
     assert items[0]["complex_name"] == "한강자이"
     assert items[1]["complex_no"] == 222
     assert items[1]["complex_name"] == "래미안 원베일리"
+
+
+def test_default_headers_include_cookie_when_configured() -> None:
+    settings = Settings(naver_land_cookie="NID_SES=abc123; NID_AUT=def456")
+    client = naver_client.NaverLandClient(settings=settings)
+
+    headers = client._default_headers(referer="https://new.land.naver.com/")
+
+    assert headers["Cookie"] == "NID_SES=abc123; NID_AUT=def456"

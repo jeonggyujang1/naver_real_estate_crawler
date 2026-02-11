@@ -43,6 +43,7 @@ class Settings(BaseSettings):
 
     naver_land_base_url: str = "https://new.land.naver.com"
     naver_land_authorization: str | None = None
+    naver_land_cookie: str | None = None
 
 
 @lru_cache
