@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -80,7 +80,7 @@ class ListingSnapshot(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     crawl_run_id: Mapped[int] = mapped_column(Integer, ForeignKey("crawl_runs.id", ondelete="CASCADE"), nullable=False, index=True)
     complex_no: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    article_no: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    article_no: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     article_name: Mapped[str | None] = mapped_column(String(255))
     trade_type_name: Mapped[str | None] = mapped_column(String(30), index=True)
     deal_price_text: Mapped[str | None] = mapped_column(String(50))
