@@ -63,6 +63,12 @@ function renderUserBadge(text) {
   qs("#userBadge").textContent = text;
 }
 
+function renderBillingBadge(planCode, status) {
+  const normalizedPlan = planCode || "UNKNOWN";
+  const normalizedStatus = status || "UNKNOWN";
+  qs("#billingPlanBadge").textContent = `플랜: ${normalizedPlan} (${normalizedStatus})`;
+}
+
 function extractComplexNoFromInput(raw) {
   const value = (raw || "").trim();
   if (!value) return null;
@@ -202,6 +208,7 @@ async function login() {
   window.localStorage.setItem("nab_refresh_token", state.refreshToken);
   renderUserBadge(`로그인됨: ${email}`);
   setStatus("#authStatus", "로그인 성공");
+  await loadBillingMe();
 }
 
 async function refreshAccessToken() {
@@ -239,6 +246,7 @@ async function logout() {
   window.localStorage.removeItem("nab_token");
   window.localStorage.removeItem("nab_refresh_token");
   renderUserBadge("로그인 필요");
+  renderBillingBadge("FREE", "LOGGED_OUT");
   setStatus("#authStatus", "로그아웃 완료");
 }
 
@@ -246,7 +254,46 @@ async function me() {
   const data = await api("/me");
   renderUserBadge(`사용자: ${data.email}`);
   setStatus("#authStatus", `내 계정: ${data.email}`);
+  await loadBillingMe();
   await loadNotificationSettings();
+}
+
+async function loadBillingMe() {
+  const data = await api("/billing/me");
+  renderBillingBadge(data.plan_code, data.status);
+  const limits = data.limits || {};
+  const watchLimit = limits.watch_complex_limit ?? "무제한";
+  const presetLimit = limits.preset_limit ?? "무제한";
+  const compareLimit = limits.compare_complex_limit ?? "무제한";
+  const manualDispatch = limits.manual_alert_dispatch ? "가능" : "불가";
+  setStatus(
+    "#billingStatus",
+    `플랜=${data.plan_code}, 관심단지=${watchLimit}, 프리셋=${presetLimit}, 비교단지=${compareLimit}, 수동알림=${manualDispatch}`
+  );
+}
+
+async function startDummyCheckout() {
+  const data = await api("/billing/checkout-sessions", {
+    method: "POST",
+    body: JSON.stringify({ plan_code: "PRO" }),
+  });
+  qs("#billingCheckoutToken").value = data.checkout_token || "";
+  setStatus(
+    "#billingStatus",
+    `결제 세션 생성 완료: plan=${data.plan_code}, amount=${data.amount_krw} KRW, token=${data.checkout_token}`
+  );
+}
+
+async function completeDummyCheckout() {
+  const checkoutToken = qs("#billingCheckoutToken").value.trim();
+  if (!checkoutToken) {
+    throw new Error("checkout_token이 필요합니다. 먼저 결제 시작 버튼을 눌러주세요.");
+  }
+  const data = await api(`/billing/checkout-sessions/${checkoutToken}/complete`, {
+    method: "POST",
+  });
+  renderBillingBadge(data.activated_plan_code, data.entitlements?.status || "ACTIVE");
+  setStatus("#billingStatus", `결제 완료 처리됨: 활성 플랜=${data.activated_plan_code}`);
 }
 
 async function addWatchComplex() {
@@ -529,6 +576,9 @@ bind("#loadWatchBtn", loadWatchComplexes);
 bind("#loadLiveWatchBtn", loadLiveWatchComplexes);
 bind("#ingestBtn", ingestNow);
 bind("#metaBtn", loadMeta);
+bind("#billingMeBtn", loadBillingMe);
+bind("#billingCheckoutBtn", startDummyCheckout);
+bind("#billingCompleteBtn", completeDummyCheckout);
 bind("#loadNotifyBtn", loadNotificationSettings);
 bind("#saveNotifyBtn", saveNotificationSettings);
 bind("#dispatchAlertBtn", dispatchAlertNow);
@@ -541,5 +591,6 @@ qs("#watchComplexKeyword").addEventListener("input", onWatchComplexKeywordInput)
 if (state.token) {
   me().catch(() => {
     renderUserBadge("로그인 필요");
+    renderBillingBadge("FREE", "LOGGED_OUT");
   });
 }

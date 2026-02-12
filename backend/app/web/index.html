@@ -258,8 +258,24 @@
           <div class="status" id="ingestStatus"></div>
         </section>
 
+        <section class="panel four">
+          <h2>4) 요금제 / 더미 결제</h2>
+          <div class="row">
+            <div id="billingPlanBadge" class="pill">플랜: 확인 필요</div>
+          </div>
+          <div class="row" style="margin-top: 8px">
+            <button id="billingMeBtn">내 플랜 조회</button>
+            <button id="billingCheckoutBtn" class="alt">PRO 결제 시작(더미)</button>
+          </div>
+          <div class="row" style="margin-top: 8px">
+            <input id="billingCheckoutToken" type="text" placeholder="checkout_token (자동 입력)" />
+            <button id="billingCompleteBtn" class="warn">결제 완료 처리</button>
+          </div>
+          <div class="status" id="billingStatus"></div>
+        </section>
+
         <section class="panel">
-          <h2>4) 알림 채널 설정 (이메일/텔레그램)</h2>
+          <h2>5) 알림 채널 설정 (이메일/텔레그램)</h2>
           <div class="split">
             <input id="notifyEmailAddress" type="email" placeholder="알림 이메일 주소" />
             <input id="notifyTelegramChatId" type="text" placeholder="텔레그램 chat_id" />
@@ -290,7 +306,7 @@
         </section>
 
         <section class="panel two">
-          <h2>5) 단지 시세 추세</h2>
+          <h2>6) 단지 시세 추세</h2>
           <div class="row">
             <input id="trendComplexNo" type="number" placeholder="complex_no" />
             <input id="trendDays" type="number" value="30" min="1" />
@@ -300,7 +316,7 @@
         </section>
 
         <section class="panel two">
-          <h2>6) 선택 단지 비교</h2>
+          <h2>7) 선택 단지 비교</h2>
           <div class="row">
             <input id="compareComplexNos" type="text" placeholder="예: 12345,23456,34567" />
             <input id="compareDays" type="number" value="30" min="1" />
@@ -310,7 +326,7 @@
         </section>
 
         <section class="panel">
-          <h2>7) 급매 후보</h2>
+          <h2>8) 급매 후보</h2>
           <div class="row">
             <input id="bargainComplexNo" type="number" placeholder="complex_no" />
             <input id="bargainDays" type="number" value="30" min="1" />
