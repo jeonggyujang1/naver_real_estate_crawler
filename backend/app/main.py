@@ -33,6 +33,17 @@ from app.services.auth import (
     maybe_rehash_password,
     verify_password,
 )
+from app.services.billing import (
+    BillingError,
+    complete_dummy_checkout_session,
+    create_dummy_checkout_session,
+    enforce_compare_limit,
+    enforce_manual_alert_dispatch,
+    enforce_preset_limit,
+    enforce_watch_complex_limit,
+    ensure_user_subscription,
+    get_user_entitlements,
+)
 from app.services.ingest import ingest_complex_snapshot
 from app.services.scheduler import CrawlScheduler
 from app.settings import get_settings
@@ -153,6 +164,10 @@ def _map_crawler_runtime_error(exc: RuntimeError) -> HTTPException:
         status_code=status.HTTP_502_BAD_GATEWAY,
         detail=f"네이버 부동산 응답 오류: {message}",
     )
+
+
+def _map_billing_error(exc: BillingError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
 @app.on_event("startup")
@@ -287,8 +302,14 @@ def analytics_compare(
     complex_nos: list[int] = Query(..., min_length=2),
     days: int = 30,
     trade_type_name: str | None = None,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    try:
+        enforce_compare_limit(db=db, user_id=current_user.id, requested_complex_count=len(complex_nos))
+    except BillingError as exc:
+        raise _map_billing_error(exc) from exc
+
     return {
         "complex_nos": complex_nos,
         "days": days,
@@ -348,6 +369,7 @@ def auth_register(
             email_address=user.email,
         )
     )
+    ensure_user_subscription(db=db, user_id=user.id)
     db.commit()
     db.refresh(user)
 
@@ -474,6 +496,69 @@ def me(current_user: User = Depends(get_current_user)) -> dict[str, str]:
     return {"user_id": str(current_user.id), "email": current_user.email}
 
 
+@app.get("/billing/me")
+def billing_me(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_user_entitlements(db=db, user_id=current_user.id)
+
+
+@app.post("/billing/checkout-sessions")
+def billing_create_checkout_session(
+    plan_code: str = Body("PRO", embed=True),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    try:
+        checkout_session = create_dummy_checkout_session(
+            db=db,
+            user_id=current_user.id,
+            plan_code=plan_code,
+        )
+    except BillingError as exc:
+        raise _map_billing_error(exc) from exc
+
+    db.commit()
+    return {
+        "checkout_session_id": str(checkout_session.id),
+        "checkout_token": checkout_session.checkout_token,
+        "provider": checkout_session.provider,
+        "status": checkout_session.status,
+        "plan_code": checkout_session.plan_code,
+        "amount_krw": checkout_session.amount_krw,
+        "currency": checkout_session.currency,
+        "checkout_url": f"/billing/checkout-sessions/{checkout_session.checkout_token}/complete",
+    }
+
+
+@app.post("/billing/checkout-sessions/{checkout_token}/complete")
+def billing_complete_checkout_session(
+    checkout_token: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    try:
+        checkout_session, _subscription, changed = complete_dummy_checkout_session(
+            db=db,
+            user_id=current_user.id,
+            checkout_token=checkout_token,
+        )
+    except BillingError as exc:
+        raise _map_billing_error(exc) from exc
+
+    db.commit()
+    entitlements = get_user_entitlements(db=db, user_id=current_user.id)
+    return {
+        "ok": True,
+        "changed": changed,
+        "checkout_session_id": str(checkout_session.id),
+        "checkout_token": checkout_session.checkout_token,
+        "activated_plan_code": entitlements["plan_code"],
+        "entitlements": entitlements,
+    }
+
+
 @app.get("/me/watch-complexes")
 def me_watch_complexes(
     current_user: User = Depends(get_current_user),
@@ -572,6 +657,11 @@ def me_add_watch_complex(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    try:
+        enforce_watch_complex_limit(db=db, user_id=current_user.id)
+    except BillingError as exc:
+        raise _map_billing_error(exc) from exc
+
     watch = UserWatchComplex(
         user_id=current_user.id,
         complex_no=complex_no,
@@ -630,6 +720,11 @@ def me_add_preset(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    try:
+        enforce_preset_limit(db=db, user_id=current_user.id)
+    except BillingError as exc:
+        raise _map_billing_error(exc) from exc
+
     preset = UserPreset(
         user_id=current_user.id,
         name=name.strip(),
@@ -767,6 +862,11 @@ def me_dispatch_bargain_alerts(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    try:
+        enforce_manual_alert_dispatch(db=db, user_id=current_user.id)
+    except BillingError as exc:
+        raise _map_billing_error(exc) from exc
+
     setting = db.get(UserNotificationSetting, current_user.id)
     if setting is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Notification setting not configured")
