@@ -22,8 +22,9 @@
   - 파일: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/app/main.py`
   - 역할: 인증, 크롤링 실행, 분석 조회, 사용자 설정 API 제공
 
-- 내부 스케줄러
+- 스케줄러 워커
   - 파일: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/app/services/scheduler.py`
+  - 파일: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/app/worker.py`
   - 역할: 지정 시각마다 관심 단지 수집 + 급매 알림 디스패치
 
 - 네이버 크롤러 클라이언트
@@ -40,15 +41,20 @@
   - 파일: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/app/services/notifier.py`
   - 역할: 급매 후보 필터링, 이메일/텔레그램 발송, 중복 발송 방지
 
+- 결제/권한 계층 (더미 결제 포함)
+  - 파일: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/app/services/billing.py`
+  - 역할: FREE/PRO 플랜 관리, 기능 제한(쿼터) 검증, 더미 체크아웃 처리
+
 - 인프라
   - 파일: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/docker-compose.yml`
-  - 구성: `app` 컨테이너 + `db(PostgreSQL)` 컨테이너
+  - 구성: `app` + `worker` + `db(PostgreSQL)` 컨테이너
 
 ### 2-2) 런타임 다이어그램
 ```mermaid
 flowchart LR
   U["User Browser"] --> W["Web UI (index.html + app.js)"]
   W --> A["FastAPI API (main.py)"]
+  W --> B["Billing API (dummy checkout)"]
   A --> C["NaverLandClient"]
   C --> N["Naver Land API"]
   A --> I["Ingest Service"]
@@ -57,8 +63,10 @@ flowchart LR
   X --> D
   A --> L["Alerts/Notifier"]
   L --> M["SMTP/Telegram API"]
-  S["Internal Scheduler"] --> I
+  K["Worker (app.worker)"] --> S["CrawlScheduler"]
+  S --> I
   S --> L
+  B --> D
 ```
 
 ---
@@ -75,6 +83,8 @@ flowchart LR
   - `user_watch_complexes` (관심 단지)
   - `user_presets` (필터/차트 저장)
   - `user_notification_settings` (알림 채널/기준)
+  - `user_subscriptions` (FREE/PRO 구독 상태)
+  - `billing_checkout_sessions` (더미 결제 세션)
 
 - 수집/분석
   - `crawl_runs` (1회 수집 실행 메타 + raw payload)
@@ -109,12 +119,19 @@ flowchart LR
 5. 분석 API에서 집계 조회
 
 ### 4-3) 스케줄 수집 + 급매 알림 흐름
-1. 앱 시작 시 `SCHEDULER_ENABLED=true`면 내부 스케줄러 실행
+1. `worker` 컨테이너가 `app.worker` 엔트리포인트로 시작
 2. 지정 시각(`SCHEDULER_TIMES_CSV`)마다 대상 단지(`SCHEDULER_COMPLEX_NOS_CSV`) 수집
 3. 사용자별 관심 단지/알림 설정 조회
 4. 급매 조건 충족 항목 산출
 5. 이메일/텔레그램 발송 시도
 6. 성공 건은 `alert_dispatch_logs`에 기록(중복 방지)
+
+### 4-5) 더미 결제 + 권한 활성화 흐름
+1. 사용자가 `POST /billing/checkout-sessions` 호출
+2. 서버가 더미 체크아웃 세션(`PENDING`) 생성
+3. 사용자가 `POST /billing/checkout-sessions/{checkout_token}/complete` 호출
+4. 세션이 `COMPLETED`로 전환되고 `user_subscriptions.plan_code=PRO` 활성화
+5. 기능 제한 게이트(`watch/preset/compare/manual alert`)가 즉시 PRO 권한으로 평가
 
 ### 4-4) 분석 흐름
 - `GET /analytics/trend/{complex_no}`
@@ -192,8 +209,9 @@ flowchart LR
 - `Authorization`/`Cookie` 만료 시 429/오류 빈도가 급증할 수 있다.
 - 주기적 갱신 운영이 필요하다.
 
-3. 내부 스케줄러 구조
-- 앱 프로세스와 스케줄러가 결합되어 있어, 앱 장애 시 스케줄도 중단된다.
+3. 더미 결제의 본질적 한계
+- 실제 PG(결제사) 승인/취소/환불 이벤트가 없으므로 금전 거래를 대체할 수 없다.
+- 현재는 유료 기능 게이팅 검증 목적의 개발용 흐름이다.
 
 4. 수집 파이프라인 단일 경로
 - 큐/워커 분리가 없어 대량 단지 확장 시 처리량과 장애격리에 한계가 있다.
@@ -209,7 +227,6 @@ flowchart LR
 ## 7) 개선 우선순위 (실무형)
 
 ### P1. 안정 운영
-- 크롤링 워커 분리 (API와 분리 배포)
 - 스케줄러 실행 상태 모니터링/알림
 - 실패율, 429율, 수집 건수 지표화
 
@@ -243,7 +260,7 @@ flowchart LR
 
 ## 9) 한 줄 요약
 현재 방식은 "빠른 제품 검증"에 매우 유리한 구조다.
-다만 장기 운영/확장 단계에서는 "워커 분리 + 관측 강화 + 세션 갱신 운영"이 핵심 개선축이다.
+이미 워커 분리와 더미 결제 게이팅까지 반영됐고, 다음 핵심은 "실결제 연동 + 운영 관측 강화"다.
 
 ---
 
@@ -266,7 +283,7 @@ flowchart LR
 - 수집(ingest) 도메인
 - 분석(analytics) 도메인
 - 알림(notify) 도메인
-- 결제/구독(billing) 도메인 (신규 예정)
+- 결제/구독(billing) 도메인 (더미 버전 구현됨)
 
 핵심:
 - billing 도메인을 기존 인증 도메인에 강결합하지 말고, 플랜/쿼터 검증 계층으로 분리한다.

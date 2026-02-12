@@ -8,6 +8,7 @@
 - 매물 수집: 단지별 매물 스냅샷 수집(수동/스케줄)
 - 분석: 단지 추세 차트, 단지 비교 차트, 급매 후보 탐지
 - 알림: 이메일/텔레그램 급매 알림 발송
+- 유료화: 더미 결제(체크아웃 생성/완료) 후 PRO 플랜 기능 활성화
 
 ## 2) 문서 맵
 - 배포 의사결정 문서: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/DEPLOYMENT_DECISION_KR.md`
@@ -108,8 +109,8 @@ SCHEDULER_POLL_SECONDS=20
 ```
 
 설명:
-- `SCHEDULER_ENABLED=true`면 API 프로세스 내부 스케줄러가 동작합니다.
-- 운영에서 앱이 내려가면 스케줄도 함께 멈춥니다.
+- 스케줄러는 전용 `worker` 컨테이너에서 동작합니다.
+- `app`과 `worker`가 분리되어 앱 재시작이 수집 루프에 주는 영향을 줄였습니다.
 
 ### 4-5) 이메일/텔레그램 알림 설정
 이메일:
@@ -181,6 +182,11 @@ npx playwright test --config=playwright.config.ts
 - `GET /analytics/compare`
 - `GET /analytics/bargains/{complex_no}`
 
+결제/플랜:
+- `GET /billing/me`
+- `POST /billing/checkout-sessions`
+- `POST /billing/checkout-sessions/{checkout_token}/complete`
+
 알림:
 - `GET /me/notification-settings`
 - `PUT /me/notification-settings`
@@ -222,6 +228,7 @@ curl -G "http://127.0.0.1:18080/crawler/search/complexes" \
 ```bash
 cd /Users/jeonggyu/workspace/naver_apt_briefing/backend
 docker compose logs -f app
+docker compose logs -f worker
 ```
 
 - 운영 시 필수:
@@ -229,8 +236,8 @@ docker compose logs -f app
   - DB 백업(일 1회 이상)
   - HTTPS(리버스 프록시) 적용
 
-- 현재 스케줄러는 앱 내부 동작:
-  - 운영 안정화 단계에서 크롤링 워커 분리를 권장
+- 현재 스케줄러는 `worker` 컨테이너에서 동작:
+  - 배포 시 `app`과 `worker`가 모두 `Up` 상태인지 함께 확인하세요.
 
 ## 11) VPS + Docker Compose + Caddy 배포 절차 (권장)
 아래 절차는 이 프로젝트의 현재 구조에 맞춘 "가장 빠른 실서비스 배포" 경로입니다.
