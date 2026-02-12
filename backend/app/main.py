@@ -1,4 +1,3 @@
-import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -45,7 +44,6 @@ from app.services.billing import (
     get_user_entitlements,
 )
 from app.services.ingest import ingest_complex_snapshot
-from app.services.scheduler import CrawlScheduler
 from app.settings import get_settings
 
 settings = get_settings()
@@ -54,7 +52,6 @@ app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
 )
-scheduler_task: asyncio.Task[Any] | None = None
 web_dir = Path(__file__).parent / "web"
 app.mount("/web", StaticFiles(directory=web_dir), name="web")
 
@@ -172,24 +169,8 @@ def _map_billing_error(exc: BillingError) -> HTTPException:
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    global scheduler_task
     if settings.auto_create_tables and settings.app_env == "dev":
         init_db()
-    if settings.scheduler_enabled:
-        scheduler = CrawlScheduler(settings=settings)
-        scheduler_task = asyncio.create_task(scheduler.run())
-
-
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    global scheduler_task
-    if scheduler_task is not None:
-        scheduler_task.cancel()
-        try:
-            await scheduler_task
-        except asyncio.CancelledError:
-            pass
-        scheduler_task = None
 
 
 @app.get("/health")
