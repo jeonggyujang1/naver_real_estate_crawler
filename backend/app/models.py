@@ -40,6 +40,15 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    subscription: Mapped["UserSubscription | None"] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    checkout_sessions: Mapped[list["BillingCheckoutSession"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class UserWatchComplex(Base):
@@ -116,6 +125,55 @@ class UserPreset(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="presets")
+
+
+class UserSubscription(Base):
+    __tablename__ = "user_subscriptions"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    plan_code: Mapped[str] = mapped_column(String(20), nullable=False, default="FREE", index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="ACTIVE", index=True)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False, default="dummy")
+    current_period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    current_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    user: Mapped["User"] = relationship(back_populates="subscription")
+
+
+class BillingCheckoutSession(Base):
+    __tablename__ = "billing_checkout_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False, default="dummy")
+    plan_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING", index=True)
+    checkout_token: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    amount_krw: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    currency: Mapped[str] = mapped_column(String(10), nullable=False, default="KRW")
+    checkout_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    user: Mapped["User"] = relationship(back_populates="checkout_sessions")
 
 
 class AuthRefreshToken(Base):
