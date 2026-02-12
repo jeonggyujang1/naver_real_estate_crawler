@@ -231,3 +231,85 @@ docker compose logs -f app
 
 - 현재 스케줄러는 앱 내부 동작:
   - 운영 안정화 단계에서 크롤링 워커 분리를 권장
+
+## 11) VPS + Docker Compose + Caddy 배포 절차 (권장)
+아래 절차는 이 프로젝트의 현재 구조에 맞춘 "가장 빠른 실서비스 배포" 경로입니다.
+
+### 11-1) 서버 준비
+권장 스펙(베타):
+- 2 vCPU / 4GB RAM / 60GB SSD
+- Ubuntu 22.04 LTS
+
+필수 포트:
+- `22` (SSH)
+- `80` (HTTP)
+- `443` (HTTPS)
+
+### 11-2) 코드 및 환경파일 준비
+```bash
+cd /opt
+git clone git@github.com:jeonggyujang1/naver_real_estate_crawler.git
+cd /opt/naver_real_estate_crawler/backend
+cp env.production.example .env.production
+```
+
+`.env.production`에서 최소 아래 값을 수정:
+- `DOMAIN`
+- `ACME_EMAIL`
+- `POSTGRES_PASSWORD`
+- `DATABASE_URL`의 비밀번호 부분
+- `AUTH_SECRET_KEY`
+- `NAVER_LAND_AUTHORIZATION`, `NAVER_LAND_COOKIE`
+
+### 11-3) 배포 실행
+```bash
+cd /opt/naver_real_estate_crawler/backend
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+상태 확인:
+```bash
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs -f app
+```
+
+헬스체크:
+```bash
+curl https://<YOUR_DOMAIN>/health
+```
+
+### 11-4) 참고 파일
+- 운영용 compose: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/docker-compose.prod.yml`
+- Caddy 설정: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/Caddyfile`
+- 운영 env 샘플: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/env.production.example`
+
+## 12) 유료 서비스 확장을 고려한 현재 운영 원칙
+현재 구조로 시작하되, 아래 원칙을 지키면 유료화 전환 시 리팩터링 비용을 줄일 수 있습니다.
+
+1. 워크로드 분리 전제
+- 지금은 API + 내부 스케줄러 결합 구조
+- 유료 단계에서는 "API 서버"와 "크롤링/알림 워커"를 분리
+
+2. 데이터 경계 명확화
+- `listing_snapshots`는 수집 원본 기반 사실 데이터
+- 유료 기능(리포트/추천/프리미엄 지표)은 별도 파생 테이블로 분리
+
+3. 과금 포인트 사전 정의
+- 플랜별 제한 항목을 미리 고정:
+  - 관심 단지 수
+  - 하루 알림 횟수
+  - 고급 차트/비교 기능 접근
+
+4. 운영 지표 우선
+- 유료화 전에 최소 지표를 확보:
+  - 크롤링 성공률
+  - 429 비율
+  - 알림 도달률
+  - 주간 활성 사용자/재방문율
+
+## 13) 유료화 전 필수 체크리스트
+- 결제 시스템(예: Stripe) 연동
+- 플랜/권한/쿼터 정책 구현
+- 장애 알림 및 온콜 룰
+- DB 백업 자동화 + 복구 리허설
+- 이용약관/개인정보 처리방침/데이터 수집 정책 검토
