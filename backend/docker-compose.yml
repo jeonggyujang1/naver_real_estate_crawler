@@ -29,5 +29,18 @@ services:
       db:
         condition: service_healthy
 
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: naver_apt_worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: ["sh", "-c", "alembic upgrade head && python -m app.worker"]
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   naver_apt_db_data:
