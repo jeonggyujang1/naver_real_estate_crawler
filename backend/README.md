@@ -14,6 +14,7 @@
 - 배포 의사결정 문서: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/DEPLOYMENT_DECISION_KR.md`
 - 기술 아키텍처 문서: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/TECHNICAL_ARCHITECTURE_KR.md`
 - 웹 테스트 가이드: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/WEB_TEST_GUIDE_KR.md`
+- 웹 UI 기능 가이드: `/Users/jeonggyu/workspace/naver_apt_briefing/backend/WEB_UI_FEATURE_GUIDE_KR.md`
 
 ## 3) 빠른 시작 (Docker Compose 권장)
 가장 쉬운 실행 방법입니다.
