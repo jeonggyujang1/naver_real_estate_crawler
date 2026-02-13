@@ -5,6 +5,7 @@ const state = {
   compareChart: null,
   complexSearchDebounceTimer: null,
   complexSearchRequestId: 0,
+  liveWatchRows: [],
 };
 
 const qs = (selector) => document.querySelector(selector);
@@ -65,6 +66,18 @@ function renderUserBadge(text) {
   qs("#userBadge").textContent = text;
 }
 
+function setAuthControls(loggedIn, email = "") {
+  const guest = qs("#authGuestControls");
+  const user = qs("#authUserControls");
+  if (!guest || !user) return;
+
+  guest.classList.toggle("active", !loggedIn);
+  user.classList.toggle("active", loggedIn);
+  if (loggedIn) {
+    qs("#authEmailDisplay").textContent = email ? `로그인 사용자: ${email}` : "로그인 사용자";
+  }
+}
+
 function renderBillingBadge(planCode, status) {
   const normalizedPlan = planCode || "UNKNOWN";
   const normalizedStatus = status || "UNKNOWN";
@@ -75,18 +88,15 @@ function extractComplexNoFromInput(raw) {
   const value = (raw || "").trim();
   if (!value) return null;
 
-  // Case 1: plain numeric input (e.g. "2977")
   if (/^\d+$/.test(value)) {
     return Number(value);
   }
 
-  // Case 2: full Naver URL that includes /complexes/{complexNo}
   const pathMatch = value.match(/\/complexes\/(\d+)/);
   if (pathMatch) {
     return Number(pathMatch[1]);
   }
 
-  // Case 3: query string style (complexNo / selectedComplexNo)
   try {
     const parsed = new URL(value);
     const q1 = parsed.searchParams.get("complexNo");
@@ -108,10 +118,10 @@ async function parseComplexUrl() {
   const raw = qs("#watchComplexUrl").value;
   const complexNo = extractComplexNoFromInput(raw);
   if (!complexNo) {
-    throw new Error("유효한 네이버 단지 URL 또는 complexNo를 입력해주세요.");
+    throw new Error("유효한 네이버 단지 URL 또는 단지 번호를 입력해주세요.");
   }
   qs("#watchComplexNo").value = String(complexNo);
-  setStatus("#authStatus", `complexNo 추출 완료: ${complexNo}`);
+  setStatus("#watchStatus", `단지 번호 추출 완료: ${complexNo}`);
 }
 
 function renderComplexSearchResults(items, hasKeyword = false) {
@@ -140,7 +150,7 @@ function renderComplexSearchResults(items, hasKeyword = false) {
     btn.addEventListener("click", () => {
       qs("#watchComplexNo").value = String(item.complex_no);
       qs("#watchComplexName").value = item.complex_name || "";
-      setStatus("#authStatus", `단지 선택 완료: ${item.complex_name} (${item.complex_no})`);
+      setStatus("#watchStatus", `단지 선택 완료: ${item.complex_name} (${item.complex_no})`);
     });
 
     root.appendChild(btn);
@@ -168,7 +178,7 @@ async function performComplexSearch({ isAuto = false } = {}) {
   }
 
   renderComplexSearchResults(data.items || [], true);
-  setStatus("#authStatus", `단지 검색 완료: ${data.count}건`);
+  setStatus("#watchStatus", `단지 검색 완료: ${data.count}건`);
 }
 
 async function searchComplexes() {
@@ -182,7 +192,7 @@ function onWatchComplexKeywordInput() {
   state.complexSearchDebounceTimer = window.setTimeout(() => {
     performComplexSearch({ isAuto: true }).catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
-      setStatus("#authStatus", message);
+      setStatus("#watchStatus", message);
     });
   }, 350);
 }
@@ -190,9 +200,10 @@ function onWatchComplexKeywordInput() {
 async function register() {
   const email = qs("#email").value.trim();
   const password = qs("#password").value;
+  const inviteCode = qs("#inviteCode")?.value?.trim() || null;
   const data = await api("/auth/register", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, invite_code: inviteCode }),
   });
   setStatus("#authStatus", `회원가입 완료: ${data.email}`);
 }
@@ -208,9 +219,11 @@ async function login() {
   state.refreshToken = data.refresh_token;
   window.localStorage.setItem("nab_token", state.token);
   window.localStorage.setItem("nab_refresh_token", state.refreshToken);
+  setAuthControls(true, email);
   renderUserBadge(`로그인됨: ${email}`);
   setStatus("#authStatus", "로그인 성공");
   await loadBillingMe();
+  await hydrateWatchDashboard();
 }
 
 async function refreshAccessToken() {
@@ -225,6 +238,7 @@ async function refreshAccessToken() {
     state.refreshToken = "";
     window.localStorage.removeItem("nab_token");
     window.localStorage.removeItem("nab_refresh_token");
+    setAuthControls(false);
     renderUserBadge("로그인 필요");
     return false;
   }
@@ -247,6 +261,7 @@ async function logout() {
   state.refreshToken = "";
   window.localStorage.removeItem("nab_token");
   window.localStorage.removeItem("nab_refresh_token");
+  setAuthControls(false);
   renderUserBadge("로그인 필요");
   renderBillingBadge("FREE", "LOGGED_OUT");
   setStatus("#authStatus", "로그아웃 완료");
@@ -254,6 +269,7 @@ async function logout() {
 
 async function me() {
   const data = await api("/me");
+  setAuthControls(true, data.email);
   renderUserBadge(`사용자: ${data.email}`);
   setStatus("#authStatus", `내 계정: ${data.email}`);
   await loadBillingMe();
@@ -308,80 +324,268 @@ async function addWatchComplex() {
       complex_name: complexName || null,
     }),
   });
-  setStatus("#authStatus", `관심 단지 등록 완료: ${data.complex_no}`);
+  setStatus("#watchStatus", `관심 단지 등록 완료: ${data.complex_no}`);
   await loadWatchComplexes();
+}
+
+function formatTimestamp(iso) {
+  if (!iso) return "-";
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return "-";
+  return parsed.toLocaleString("ko-KR", { hour12: false });
+}
+
+async function deleteWatchComplex(watchId) {
+  await api(`/me/watch-complexes/${watchId}`, { method: "DELETE" });
+  setStatus("#watchStatus", `관심 단지 삭제 완료: ID ${watchId}`);
+  await loadWatchComplexes();
+}
+
+function renderWatchComplexRows(items) {
+  const body = qs("#watchBody");
+  body.innerHTML = "";
+  if (!items.length) {
+    body.innerHTML = '<tr><td colspan="5" class="muted">등록된 단지가 없습니다.</td></tr>';
+    return;
+  }
+
+  items.forEach((item) => {
+    const tr = document.createElement("tr");
+    const location = [item.sido_name, item.gugun_name, item.dong_name].filter(Boolean).join(" ");
+    tr.innerHTML = `
+      <td class="mono">${item.complex_no}</td>
+      <td>${item.complex_name || "-"}</td>
+      <td>${location || "-"}</td>
+      <td>${formatTimestamp(item.created_at)}</td>
+      <td><button type="button" class="warn" data-watch-id="${item.id}">삭제</button></td>
+    `;
+    body.appendChild(tr);
+  });
+
+  body.querySelectorAll("button[data-watch-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const watchId = Number(button.getAttribute("data-watch-id"));
+      if (!watchId) return;
+      try {
+        await deleteWatchComplex(watchId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setStatus("#watchStatus", message);
+      }
+    });
+  });
 }
 
 async function loadWatchComplexes() {
   const data = await api("/me/watch-complexes");
-  const root = qs("#watchList");
-  root.innerHTML = "";
-  if (!data.items.length) {
-    root.innerHTML = '<div class="muted">등록된 단지가 없습니다.</div>';
-    return;
-  }
-  data.items.forEach((item) => {
-    const tag = document.createElement("div");
-    tag.className = "pill";
-    tag.textContent = `${item.complex_no} ${item.complex_name || ""}`.trim();
-    root.appendChild(tag);
-  });
+  const items = Array.isArray(data.items) ? data.items : [];
+  renderWatchComplexRows(items);
+  setStatus("#watchStatus", `관심 단지 ${items.length}건`);
 }
 
-function renderLiveWatchListings(items) {
-  const root = qs("#liveWatchList");
-  root.innerHTML = "";
+function renderCollectionStatus(data) {
+  const auto = data.auto_collect || {};
+  const times = Array.isArray(auto.times) ? auto.times : [];
+  const timesText = times.length ? times.join(", ") : "미설정";
+  const hint = [
+    `자동수집: ${auto.enabled ? "사용 중" : "비활성"}`,
+    `시간대: ${auto.timezone || "-"}`,
+    `실행 시각: ${timesText}`,
+    `폴링주기: ${auto.poll_seconds || "-"}초`,
+    "현재 자동수집 주기는 서버 전역 설정입니다.",
+  ].join(" | ");
+  qs("#collectionAutoCollectHint").textContent = hint;
+
+  const body = qs("#collectionStatusBody");
+  body.innerHTML = "";
+  const items = Array.isArray(data.items) ? data.items : [];
   if (!items.length) {
-    root.innerHTML = '<div class="muted">실시간 조회 대상 단지가 없습니다.</div>';
+    body.innerHTML = '<tr><td colspan="6" class="muted">등록된 관심 단지가 없습니다.</td></tr>';
+    setStatus("#collectionStatusNote", "조회 결과가 없습니다.");
     return;
   }
 
-  items.forEach((group) => {
-    const block = document.createElement("div");
-    block.style.marginBottom = "10px";
+  items.forEach((item) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="mono">${item.complex_no}</td>
+      <td>${item.complex_name || "-"}</td>
+      <td>${formatTimestamp(item.latest_collected_at)}</td>
+      <td>${item.latest_listing_count ?? "-"}</td>
+      <td>${item.last_run_status || "-"}</td>
+      <td>${item.auto_collect_target ? "예" : "아니오"}</td>
+    `;
+    body.appendChild(tr);
+  });
 
-    const title = document.createElement("div");
-    title.className = "pill";
-    title.textContent = `${group.complex_no} ${group.complex_name || ""} (매물 ${group.article_count || 0}건)`.trim();
-    block.appendChild(title);
+  setStatus("#collectionStatusNote", `${items.length}개 단지의 수집 이력을 확인했습니다.`);
+}
+
+async function loadCollectionStatus() {
+  const data = await api("/me/watch-complexes/collection-status");
+  renderCollectionStatus(data);
+}
+
+function parsePriceToManwon(raw) {
+  if (!raw) return null;
+  const text = String(raw).replace(/,/g, "").trim();
+  const onlyNumbers = text.match(/\d+/g);
+  if (!onlyNumbers) return null;
+  const numeric = Number(onlyNumbers.join(""));
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function normalizeText(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function flattenLiveWatchRows(groups) {
+  const rows = [];
+  (groups || []).forEach((group) => {
+    const complexNo = group.complex_no;
+    const complexName = group.complex_name || "-";
 
     if (group.error) {
-      const errorLine = document.createElement("div");
-      errorLine.className = "muted";
-      errorLine.textContent = `조회 실패: ${group.error}`;
-      block.appendChild(errorLine);
-      root.appendChild(block);
+      rows.push({
+        complexNo,
+        complexName,
+        articleNo: "-",
+        articleName: "조회 실패",
+        tradeType: "-",
+        price: "-",
+        floorInfo: "-",
+        direction: "-",
+        error: group.error,
+        priceManwon: null,
+      });
       return;
     }
 
     const articles = Array.isArray(group.articles) ? group.articles : [];
     if (!articles.length) {
-      const emptyLine = document.createElement("div");
-      emptyLine.className = "muted";
-      emptyLine.textContent = "표시할 매물이 없습니다.";
-      block.appendChild(emptyLine);
-      root.appendChild(block);
+      rows.push({
+        complexNo,
+        complexName,
+        articleNo: "-",
+        articleName: "표시할 매물 없음",
+        tradeType: "-",
+        price: "-",
+        floorInfo: "-",
+        direction: "-",
+        error: null,
+        priceManwon: null,
+      });
       return;
     }
 
     articles.forEach((article) => {
-      const line = document.createElement("div");
-      line.className = "muted";
-      line.textContent =
-        `${article.article_name || "-"} | ${article.trade_type || "-"} | ` +
-        `${article.price || "-"} | ${article.floor_info || "-"}`;
-      block.appendChild(line);
+      const price = article.price || "-";
+      rows.push({
+        complexNo,
+        complexName,
+        articleNo: article.article_no || "-",
+        articleName: article.article_name || "-",
+        tradeType: article.trade_type || "-",
+        price,
+        floorInfo: article.floor_info || "-",
+        direction: article.direction || "-",
+        error: null,
+        priceManwon: parsePriceToManwon(price),
+      });
     });
-    root.appendChild(block);
   });
+  return rows;
+}
+
+function renderLiveWatchListings() {
+  const keyword = normalizeText(qs("#liveFilterKeyword").value);
+  const tradeTypeKeyword = normalizeText(qs("#liveFilterTradeType").value);
+  const maxPriceRaw = qs("#liveFilterMaxPrice").value.trim();
+  const maxPrice = maxPriceRaw ? Number(maxPriceRaw) : null;
+
+  const filtered = state.liveWatchRows.filter((row) => {
+    const haystack = normalizeText(`${row.complexName} ${row.articleName}`);
+    if (keyword && !haystack.includes(keyword)) return false;
+
+    if (tradeTypeKeyword && !normalizeText(row.tradeType).includes(tradeTypeKeyword)) return false;
+
+    if (Number.isFinite(maxPrice) && row.priceManwon != null && row.priceManwon > maxPrice) {
+      return false;
+    }
+    return true;
+  });
+
+  const body = qs("#liveWatchBody");
+  body.innerHTML = "";
+  if (!filtered.length) {
+    body.innerHTML = '<tr><td colspan="6" class="muted">표시할 실시간 매물이 없습니다.</td></tr>';
+    setStatus("#liveWatchStatus", "조건에 맞는 실시간 매물이 없습니다.");
+    return;
+  }
+
+  filtered.forEach((row) => {
+    const tr = document.createElement("tr");
+    if (row.error) {
+      tr.innerHTML = `
+        <td>${row.complexNo} ${row.complexName}</td>
+        <td colspan="5" class="muted">조회 실패: ${row.error}</td>
+      `;
+      body.appendChild(tr);
+      return;
+    }
+
+    tr.innerHTML = `
+      <td><span class="mono">${row.complexNo}</span> ${row.complexName}</td>
+      <td class="mono">${row.articleNo}</td>
+      <td>${row.articleName}</td>
+      <td>${row.tradeType}</td>
+      <td>${row.price}</td>
+      <td>${row.floorInfo}${row.direction && row.direction !== "-" ? ` / ${row.direction}` : ""}</td>
+    `;
+    body.appendChild(tr);
+  });
+
+  setStatus("#liveWatchStatus", `실시간 조회 ${state.liveWatchRows.length}건 중 ${filtered.length}건 표시`);
+}
+
+function onLiveFilterInput() {
+  if (!state.liveWatchRows.length) return;
+  renderLiveWatchListings();
 }
 
 async function loadLiveWatchComplexes() {
   const page = Number(qs("#liveWatchPage").value || "1");
   const maxPerComplex = Number(qs("#liveWatchMax").value || "10");
   const data = await api(`/me/watch-complexes/live?page=${page}&max_per_complex=${maxPerComplex}`);
-  renderLiveWatchListings(data.items || []);
-  setStatus("#authStatus", `실시간 매물 조회 완료: ${data.count}개 단지`);
+  const groups = Array.isArray(data.items) ? data.items : [];
+  state.liveWatchRows = flattenLiveWatchRows(groups);
+
+  if (!state.liveWatchRows.length) {
+    qs("#liveWatchBody").innerHTML = '<tr><td colspan="6" class="muted">실시간 조회 대상 단지가 없습니다.</td></tr>';
+    setStatus("#liveWatchStatus", "실시간 조회 대상 단지가 없습니다.");
+    return;
+  }
+
+  renderLiveWatchListings();
+  setStatus("#watchStatus", `실시간 매물 조회 완료: ${groups.length}개 단지`);
+}
+
+async function hydrateWatchDashboard() {
+  try {
+    await loadWatchComplexes();
+  } catch (_e) {
+    // ignore initial watch list loading errors in background hydration.
+  }
+  try {
+    await loadLiveWatchComplexes();
+  } catch (_e) {
+    // ignore initial live loading errors in background hydration.
+  }
+  try {
+    await loadCollectionStatus();
+  } catch (_e) {
+    // ignore initial collection status loading errors in background hydration.
+  }
 }
 
 async function ingestNow() {
@@ -393,7 +597,10 @@ async function ingestNow() {
 
   const pagesFetched = Number(data.pages_fetched || 0);
   const listingCount = Number(data.listing_count || 0);
-  const baseLine = `데이터 새로고침 완료: 단지 ${complexNo}에서 ${listingCount}건을 수집했습니다.`;
+  const reused = Number(data.reused || 0) === 1;
+  const baseLine = reused
+    ? `데이터 재사용: 단지 ${complexNo}는 현재 수집 구간의 기존 데이터 ${listingCount}건을 재사용했습니다.`
+    : `데이터 새로고침 완료: 단지 ${complexNo}에서 ${listingCount}건을 수집했습니다.`;
   const pageLine = pagesFetched > 0 ? ` 확인한 페이지 수: ${pagesFetched}페이지.` : "";
 
   let trendLine = "";
@@ -421,7 +628,7 @@ async function loadMeta() {
   const data = await api("/meta");
   setStatus(
     "#ingestStatus",
-    `운영 정보: interval=${data.crawler_interval_minutes}분, retry=${data.crawler_max_retry}회. 일반 사용보다는 운영 점검용 정보입니다.`
+    `운영 정보: interval=${data.crawler_interval_minutes}분, retry=${data.crawler_max_retry}회, reuse_window=${data.crawler_reuse_window_hours}시간. 일반 사용보다는 운영 점검용 정보입니다.`
   );
 }
 
@@ -626,7 +833,9 @@ async function loadMyBargainAlerts() {
 }
 
 function bind(id, fn, errorTargets = ["#authStatus", "#ingestStatus"]) {
-  qs(id).addEventListener("click", async () => {
+  const element = qs(id);
+  if (!element) return;
+  element.addEventListener("click", async () => {
     try {
       await fn();
     } catch (err) {
@@ -640,11 +849,12 @@ bind("#registerBtn", register, ["#authStatus"]);
 bind("#loginBtn", login, ["#authStatus"]);
 bind("#meBtn", me, ["#authStatus"]);
 bind("#logoutBtn", logout, ["#authStatus"]);
-bind("#searchComplexBtn", searchComplexes, ["#authStatus"]);
-bind("#parseComplexUrlBtn", parseComplexUrl, ["#authStatus"]);
-bind("#addWatchBtn", addWatchComplex, ["#authStatus"]);
-bind("#loadWatchBtn", loadWatchComplexes, ["#authStatus"]);
-bind("#loadLiveWatchBtn", loadLiveWatchComplexes, ["#authStatus"]);
+bind("#searchComplexBtn", searchComplexes, ["#watchStatus"]);
+bind("#parseComplexUrlBtn", parseComplexUrl, ["#watchStatus"]);
+bind("#addWatchBtn", addWatchComplex, ["#watchStatus"]);
+bind("#loadWatchBtn", loadWatchComplexes, ["#watchStatus"]);
+bind("#loadLiveWatchBtn", loadLiveWatchComplexes, ["#liveWatchStatus"]);
+bind("#loadCollectionStatusBtn", loadCollectionStatus, ["#collectionStatusNote"]);
 bind("#ingestBtn", ingestNow, ["#ingestStatus"]);
 bind("#metaBtn", loadMeta, ["#ingestStatus"]);
 bind("#billingMeBtn", loadBillingMe, ["#billingStatus"]);
@@ -657,11 +867,21 @@ bind("#loadTrendBtn", loadTrend, ["#trendStatus"]);
 bind("#loadCompareBtn", loadCompare, ["#compareStatus"]);
 bind("#loadBargainBtn", loadBargains, ["#bargainStatus"]);
 bind("#loadMyBargainBtn", loadMyBargainAlerts, ["#bargainStatus"]);
-qs("#watchComplexKeyword").addEventListener("input", onWatchComplexKeywordInput);
+
+qs("#watchComplexKeyword")?.addEventListener("input", onWatchComplexKeywordInput);
+qs("#liveFilterKeyword")?.addEventListener("input", onLiveFilterInput);
+qs("#liveFilterTradeType")?.addEventListener("input", onLiveFilterInput);
+qs("#liveFilterMaxPrice")?.addEventListener("input", onLiveFilterInput);
 
 if (state.token) {
-  me().catch(() => {
-    renderUserBadge("로그인 필요");
-    renderBillingBadge("FREE", "LOGGED_OUT");
-  });
+  me()
+    .then(() => hydrateWatchDashboard())
+    .catch(() => {
+      setAuthControls(false);
+      renderUserBadge("로그인 필요");
+      renderBillingBadge("FREE", "LOGGED_OUT");
+    });
+} else {
+  setAuthControls(false);
+  renderBillingBadge("FREE", "LOGGED_OUT");
 }

@@ -92,6 +92,10 @@
         grid-column: span 4;
       }
 
+      .panel.six {
+        grid-column: span 6;
+      }
+
       .row {
         display: flex;
         gap: 8px;
@@ -193,6 +197,14 @@
         line-height: 1.45;
       }
 
+      .auth-controls {
+        display: none;
+      }
+
+      .auth-controls.active {
+        display: block;
+      }
+
       .hint {
         margin-top: 8px;
         color: var(--muted);
@@ -227,11 +239,41 @@
         padding: 8px 6px;
         border-bottom: 1px solid var(--border);
         font-size: 0.9rem;
+        vertical-align: top;
+      }
+
+      .scroll-table {
+        overflow: auto;
+        margin-top: 8px;
+      }
+
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      }
+
+      .tag {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #e0f2fe;
+        color: #0c4a6e;
+        font-size: 0.78rem;
+        font-weight: 600;
+      }
+
+      .panel.slim {
+        padding-top: 12px;
+        padding-bottom: 12px;
+      }
+
+      .panel.slim h2 {
+        margin-bottom: 8px;
       }
 
       @media (max-width: 960px) {
         .panel.two,
-        .panel.four {
+        .panel.four,
+        .panel.six {
           grid-column: span 12;
         }
       }
@@ -248,22 +290,45 @@
       </div>
 
       <div class="grid">
-        <section class="panel four">
+        <section class="panel four slim">
           <h2>1) 계정</h2>
-          <div class="split">
-            <input id="email" type="email" placeholder="email@example.com" />
-            <input id="password" type="password" placeholder="비밀번호 (8자 이상)" />
+          <div id="authGuestControls" class="auth-controls active">
+            <div class="fields">
+              <div class="field">
+                <label for="email">이메일 (로그인 ID)</label>
+                <input id="email" type="email" placeholder="email@example.com" />
+              </div>
+              <div class="field">
+                <label for="password">비밀번호</label>
+                <input id="password" type="password" placeholder="8자 이상" />
+              </div>
+              <div class="field">
+                <label for="inviteCode">가입 승인 코드 (선택)</label>
+                <input id="inviteCode" type="text" placeholder="운영자가 설정한 경우에만 입력" />
+              </div>
+            </div>
+            <div class="row" style="margin-top: 8px">
+              <button id="registerBtn">회원가입</button>
+              <button id="loginBtn" class="alt">로그인</button>
+            </div>
+            <div class="hint">
+              운영자가 가입 승인 코드를 설정한 경우에만 입력하세요. 미설정 환경에서는 비워둬도 회원가입됩니다.
+            </div>
           </div>
-          <div class="row" style="margin-top: 8px">
-            <button id="registerBtn">회원가입</button>
-            <button id="loginBtn" class="alt">로그인</button>
-            <button id="meBtn" class="warn">내 정보</button>
-            <button id="logoutBtn" class="warn">로그아웃</button>
+          <div id="authUserControls" class="auth-controls">
+            <div class="row">
+              <div id="authEmailDisplay" class="pill">로그인 사용자</div>
+              <div id="billingPlanBadge" class="pill">플랜: 확인 필요</div>
+            </div>
+            <div class="row" style="margin-top: 8px">
+              <button id="meBtn" class="alt">내 정보 새로고침</button>
+              <button id="logoutBtn" class="warn">로그아웃</button>
+            </div>
           </div>
           <div class="status" id="authStatus"></div>
         </section>
 
-        <section class="panel four">
+        <section class="panel six">
           <h2>2) 관심 단지 등록</h2>
           <div class="row" style="margin-top: 8px">
             <input id="watchComplexKeyword" type="text" placeholder="단지명 검색 (2자 이상)" />
@@ -271,17 +336,45 @@
           </div>
           <div class="list" id="watchComplexSearchList" style="margin-top: 8px"></div>
           <div class="row" style="margin-top: 8px">
-            <input id="watchComplexUrl" type="text" placeholder="네이버 단지 URL 또는 complexNo" />
-            <button id="parseComplexUrlBtn" class="alt">URL에서 번호 추출</button>
+            <input id="watchComplexUrl" type="text" placeholder="네이버 단지 URL 또는 단지 번호" />
+            <button id="parseComplexUrlBtn" class="alt">URL에서 단지 번호 추출</button>
           </div>
-          <div class="split">
-            <input id="watchComplexNo" type="number" placeholder="complex_no" />
-            <input id="watchComplexName" type="text" placeholder="단지명 (선택)" />
+          <div class="fields">
+            <div class="field">
+              <label for="watchComplexNo">단지 번호</label>
+              <input id="watchComplexNo" type="number" placeholder="예: 2977" />
+            </div>
+            <div class="field">
+              <label for="watchComplexName">단지명 (선택)</label>
+              <input id="watchComplexName" type="text" placeholder="예: 래미안 대치 팰리스" />
+            </div>
           </div>
           <div class="row" style="margin-top: 8px">
             <button id="addWatchBtn">등록</button>
             <button id="loadWatchBtn" class="alt">목록 조회</button>
           </div>
+          <div class="hint">
+            단지 번호는 단지 URL `.../complexes/2977`의 숫자값입니다. 단지명 검색 결과를 클릭하면 자동 입력됩니다.
+          </div>
+          <div class="scroll-table">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>단지 번호</th>
+                  <th>단지명</th>
+                  <th>위치</th>
+                  <th>등록일</th>
+                  <th>관리</th>
+                </tr>
+              </thead>
+              <tbody id="watchBody"></tbody>
+            </table>
+          </div>
+          <div class="status" id="watchStatus"></div>
+        </section>
+
+        <section class="panel six">
+          <h2>2-1) 실시간 매물 조회</h2>
           <div class="fields" style="margin-top: 8px">
             <div class="field">
               <label for="liveWatchPage">조회 페이지</label>
@@ -295,18 +388,72 @@
           <div class="row" style="margin-top: 8px">
             <button id="loadLiveWatchBtn" class="warn">실시간 매물 조회</button>
           </div>
-          <div class="hint">
-            조회 페이지는 네이버 매물 페이지 번호입니다. 최대 매물 수는 단지별로 화면에 보여줄 매물 개수 제한입니다.
+          <div class="fields" style="margin-top: 8px">
+            <div class="field">
+              <label for="liveFilterKeyword">매물 검색어</label>
+              <input id="liveFilterKeyword" type="text" placeholder="단지명/매물명" />
+            </div>
+            <div class="field">
+              <label for="liveFilterTradeType">거래유형</label>
+              <input id="liveFilterTradeType" type="text" placeholder="예: 매매, 전세, 월세" />
+            </div>
+            <div class="field">
+              <label for="liveFilterMaxPrice">최대 매매가(만원, 선택)</label>
+              <input id="liveFilterMaxPrice" type="number" min="0" step="1" placeholder="예: 150000" />
+            </div>
           </div>
-          <div class="list" id="watchList" style="margin-top: 8px"></div>
-          <div class="list" id="liveWatchList" style="margin-top: 8px"></div>
+          <div class="hint">
+            조회 페이지는 네이버 매물 페이지 번호입니다. 필터는 현재 화면에 표시된 실시간 조회 결과에 즉시 적용됩니다.
+          </div>
+          <div class="scroll-table">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>단지</th>
+                  <th>매물번호</th>
+                  <th>매물명</th>
+                  <th>거래유형</th>
+                  <th>가격</th>
+                  <th>층/방향</th>
+                </tr>
+              </thead>
+              <tbody id="liveWatchBody"></tbody>
+            </table>
+          </div>
+          <div class="status" id="liveWatchStatus"></div>
+        </section>
+
+        <section class="panel six">
+          <h2>2-2) 수집 이력 / 자동수집 상태</h2>
+          <div class="row">
+            <button id="loadCollectionStatusBtn" class="alt">수집 상태 조회</button>
+          </div>
+          <div class="hint" id="collectionAutoCollectHint">
+            자동수집 정보 로딩 전입니다. 버튼을 눌러 현재 스케줄과 관심 단지별 최신 수집 시각을 확인하세요.
+          </div>
+          <div class="scroll-table">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>단지 번호</th>
+                  <th>단지명</th>
+                  <th>최신 수집 시각</th>
+                  <th>최신 수집 건수</th>
+                  <th>마지막 시도 상태</th>
+                  <th>자동수집 대상</th>
+                </tr>
+              </thead>
+              <tbody id="collectionStatusBody"></tbody>
+            </table>
+          </div>
+          <div class="status" id="collectionStatusNote"></div>
         </section>
 
         <section class="panel four">
           <h2>3) 데이터 새로고침 (수동)</h2>
           <div class="fields">
             <div class="field">
-              <label for="ingestComplexNo">단지 번호 (complex_no)</label>
+              <label for="ingestComplexNo">단지 번호</label>
               <input id="ingestComplexNo" type="number" placeholder="예: 2977" />
             </div>
             <div class="field">
@@ -324,9 +471,7 @@
 
         <section class="panel four">
           <h2>4) 요금제 / 더미 결제</h2>
-          <div class="row">
-            <div id="billingPlanBadge" class="pill">플랜: 확인 필요</div>
-          </div>
+          <div class="row"><span class="tag">결제 테스트 모드</span></div>
           <div class="row" style="margin-top: 8px">
             <button id="billingMeBtn">내 플랜 조회</button>
             <button id="billingCheckoutBtn" class="alt">PRO 결제 시작(더미)</button>
@@ -380,7 +525,7 @@
           <h2>6) 단지 시세 추세</h2>
           <div class="fields">
             <div class="field">
-              <label for="trendComplexNo">단지 번호 (complex_no)</label>
+              <label for="trendComplexNo">단지 번호</label>
               <input id="trendComplexNo" type="number" placeholder="예: 2977" />
             </div>
             <div class="field">
@@ -424,7 +569,7 @@
           <h2>8) 급매 후보</h2>
           <div class="fields">
             <div class="field">
-              <label for="bargainComplexNo">단지 번호 (complex_no)</label>
+              <label for="bargainComplexNo">단지 번호</label>
               <input id="bargainComplexNo" type="number" placeholder="예: 2977" />
             </div>
             <div class="field">

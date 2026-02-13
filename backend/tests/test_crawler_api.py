@@ -75,3 +75,18 @@ def test_crawler_search_complexes_maps_rate_limit_error_to_503(monkeypatch: pyte
 
     assert exc_info.value.status_code == 503
     assert "잠시 후" in str(exc_info.value.detail)
+
+
+def test_registration_rate_limit_blocks_excessive_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main.settings, "auth_register_rate_limit_per_window", 2)
+    monkeypatch.setattr(main.settings, "auth_register_rate_limit_window_minutes", 60)
+    main.REGISTER_ATTEMPTS.clear()
+
+    main._enforce_registration_rate_limit("test-ip")
+    main._enforce_registration_rate_limit("test-ip")
+
+    with pytest.raises(HTTPException) as exc_info:
+        main._enforce_registration_rate_limit("test-ip")
+
+    assert exc_info.value.status_code == 429
+    assert "회원가입 요청이 너무 많습니다" in str(exc_info.value.detail)

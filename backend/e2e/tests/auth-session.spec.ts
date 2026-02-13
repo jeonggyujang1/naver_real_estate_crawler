@@ -84,10 +84,12 @@ test("duplicate registration and wrong password show clear error messages", asyn
   await expect(page.locator("#authStatus")).toContainText("Invalid credentials");
 });
 
-test("me button without login shows auth required message", async ({ page }) => {
+test("guest auth controls are shown before login", async ({ page }) => {
   await openFreshPage(page);
-  await page.click("#meBtn");
-  await expect(page.locator("#authStatus")).toContainText("Authorization header is required");
+  await expect(page.locator("#authGuestControls")).toHaveClass(/active/);
+  await expect(page.locator("#authUserControls")).not.toHaveClass(/active/);
+  await expect(page.locator("#email")).toBeVisible();
+  await expect(page.locator("#password")).toBeVisible();
 });
 
 test("extract complexNo from naver url input", async ({ page }) => {
@@ -99,7 +101,7 @@ test("extract complexNo from naver url input", async ({ page }) => {
   );
   await page.click("#parseComplexUrlBtn");
 
-  await expect(page.locator("#authStatus")).toContainText("complexNo 추출 완료: 2977");
+  await expect(page.locator("#watchStatus")).toContainText("단지 번호 추출 완료: 2977");
   await expect(page.locator("#watchComplexNo")).toHaveValue("2977");
 });
 
@@ -133,4 +135,31 @@ test("complex name autocomplete fills complex number and name", async ({ page })
   await page.click("#watchComplexSearchList button");
   await expect(page.locator("#watchComplexNo")).toHaveValue("2977");
   await expect(page.locator("#watchComplexName")).toHaveValue("래미안 대치 팰리스");
+});
+
+test("watch complex can be deleted from table", async ({ page }) => {
+  const email = `watch_del_${Date.now()}@example.com`;
+  const password = "Password123!";
+
+  await openFreshPage(page);
+  await page.fill("#email", email);
+  await page.fill("#password", password);
+  await page.click("#registerBtn");
+  await expect(page.locator("#authStatus")).toContainText("회원가입 완료");
+  await page.click("#loginBtn");
+  await expect(page.locator("#authStatus")).toContainText("로그인 성공");
+  await expect(page.locator("#authUserControls")).toHaveClass(/active/);
+
+  await page.fill("#watchComplexNo", "2977");
+  await page.fill("#watchComplexName", "삭제테스트단지");
+  await page.click("#addWatchBtn");
+  await expect(page.locator("#watchStatus")).toContainText("관심 단지 1건");
+  await page.click("#loadWatchBtn");
+
+  await expect(page.locator("#watchBody")).toContainText("2977");
+  await expect(page.locator("#watchBody")).toContainText("삭제테스트단지");
+
+  await page.click("#watchBody button[data-watch-id]");
+  await expect(page.locator("#watchStatus")).toContainText("관심 단지 0건");
+  await expect(page.locator("#watchBody")).not.toContainText("삭제테스트단지");
 });

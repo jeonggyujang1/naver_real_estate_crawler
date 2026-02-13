@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     crawler_interval_minutes: int = Field(default=60, ge=5, le=1440)
     crawler_max_retry: int = Field(default=3, ge=0, le=10)
     crawler_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
+    crawler_reuse_window_hours: int = Field(default=12, ge=0, le=24)
     auto_create_tables: bool = False
     scheduler_enabled: bool = False
     scheduler_timezone: str = "Asia/Seoul"
@@ -28,6 +29,9 @@ class Settings(BaseSettings):
     auth_jwt_issuer: str = "naver-apt-briefing"
     auth_access_token_ttl_minutes: int = Field(default=15, ge=5, le=60)
     auth_refresh_token_ttl_days: int = Field(default=30, ge=1, le=90)
+    auth_register_invite_code: str | None = None
+    auth_register_rate_limit_per_window: int = Field(default=20, ge=1, le=200)
+    auth_register_rate_limit_window_minutes: int = Field(default=60, ge=1, le=1440)
 
     smtp_enabled: bool = False
     smtp_host: str | None = None

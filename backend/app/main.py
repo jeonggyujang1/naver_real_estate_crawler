@@ -1,12 +1,12 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,8 @@ from app.db import get_db, init_db
 from app.models import (
     AuthAccessTokenRevocation,
     AuthRefreshToken,
+    CrawlRun,
+    ListingSnapshot,
     User,
     UserNotificationSetting,
     UserPreset,
@@ -47,6 +49,7 @@ from app.services.ingest import ingest_complex_snapshot
 from app.settings import get_settings
 
 settings = get_settings()
+REGISTER_ATTEMPTS: dict[str, list[datetime]] = {}
 
 app = FastAPI(
     title=settings.app_name,
@@ -167,6 +170,40 @@ def _map_billing_error(exc: BillingError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
+def _parse_csv_ints(raw: str) -> list[int]:
+    result: list[int] = []
+    for token in raw.split(","):
+        value = token.strip()
+        if value.isdigit():
+            result.append(int(value))
+    return result
+
+
+def _resolve_client_key(request: Request, x_forwarded_for: str | None) -> str:
+    if x_forwarded_for:
+        first = x_forwarded_for.split(",")[0].strip()
+        if first:
+            return first
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _enforce_registration_rate_limit(client_key: str) -> None:
+    limit = settings.auth_register_rate_limit_per_window
+    window = timedelta(minutes=settings.auth_register_rate_limit_window_minutes)
+    now = datetime.now(UTC)
+    attempts = REGISTER_ATTEMPTS.setdefault(client_key, [])
+    cutoff = now - window
+    attempts[:] = [ts for ts in attempts if ts >= cutoff]
+    if len(attempts) >= limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="회원가입 요청이 너무 많습니다. 잠시 후 다시 시도해주세요.",
+        )
+    attempts.append(now)
+
+
 @app.on_event("startup")
 async def startup_event() -> None:
     if settings.auto_create_tables and settings.app_env == "dev":
@@ -190,6 +227,7 @@ def meta() -> dict[str, str | int]:
         "version": settings.app_version,
         "crawler_interval_minutes": settings.crawler_interval_minutes,
         "crawler_max_retry": settings.crawler_max_retry,
+        "crawler_reuse_window_hours": settings.crawler_reuse_window_hours,
     }
 
 
@@ -238,6 +276,7 @@ def crawler_ingest(
     complex_no: int,
     page: int = 1,
     max_pages: int = 1,
+    force: bool = False,
     db: Session = Depends(get_db),
 ) -> dict[str, int]:
     if page < 1:
@@ -252,6 +291,7 @@ def crawler_ingest(
             complex_no=complex_no,
             page=page,
             max_pages=max_pages,
+            reuse_window_hours=0 if force else settings.crawler_reuse_window_hours,
         )
     except RuntimeError as exc:
         raise _map_crawler_runtime_error(exc) from exc
@@ -331,10 +371,24 @@ def analytics_bargains(
 
 @app.post("/auth/register")
 def auth_register(
+    request: Request,
     email: str = Body(..., embed=True),
     password: str = Body(..., embed=True, min_length=8),
+    invite_code: str | None = Body(None, embed=True),
+    x_forwarded_for: Annotated[str | None, Header()] = None,
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
+    client_key = _resolve_client_key(request=request, x_forwarded_for=x_forwarded_for)
+    _enforce_registration_rate_limit(client_key=client_key)
+
+    expected_invite_code = (settings.auth_register_invite_code or "").strip()
+    if expected_invite_code:
+        if (invite_code or "").strip() != expected_invite_code:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="가입 승인 코드가 올바르지 않습니다.",
+            )
+
     normalized_email = email.strip().lower()
     existing_user = db.scalar(select(User).where(User.email == normalized_email))
     if existing_user is not None:
@@ -567,6 +621,152 @@ def me_watch_complexes(
     }
 
 
+@app.get("/me/watch-complexes/collection-status")
+def me_watch_complexes_collection_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    watches = db.scalars(
+        select(UserWatchComplex)
+        .where(UserWatchComplex.user_id == current_user.id)
+        .order_by(UserWatchComplex.created_at.desc())
+    ).all()
+    complex_nos = list({item.complex_no for item in watches})
+    scheduler_complex_nos = set(_parse_csv_ints(settings.scheduler_complex_nos_csv))
+    scheduler_times = sorted([token.strip() for token in settings.scheduler_times_csv.split(",") if token.strip()])
+
+    if not complex_nos:
+        return {
+            "count": 0,
+            "auto_collect": {
+                "enabled": settings.scheduler_enabled,
+                "timezone": settings.scheduler_timezone,
+                "times": scheduler_times,
+                "poll_seconds": settings.scheduler_poll_seconds,
+                "configured_complex_count": len(scheduler_complex_nos),
+                "note": "자동수집 주기는 서버 전역 설정입니다. 계정별로 개별 주기를 다르게 두지는 않습니다.",
+            },
+            "items": [],
+        }
+
+    latest_success_rows = db.execute(
+        select(
+            CrawlRun.complex_no,
+            func.max(CrawlRun.completed_at).label("latest_collected_at"),
+            func.max(CrawlRun.id).label("latest_success_run_id"),
+        )
+        .where(CrawlRun.complex_no.in_(complex_nos), CrawlRun.status == "SUCCESS")
+        .group_by(CrawlRun.complex_no)
+    ).all()
+    latest_success_map = {
+        int(row.complex_no): {
+            "latest_collected_at": row.latest_collected_at,
+            "latest_success_run_id": int(row.latest_success_run_id) if row.latest_success_run_id is not None else None,
+        }
+        for row in latest_success_rows
+    }
+
+    latest_attempt_rows = db.execute(
+        select(
+            CrawlRun.complex_no,
+            func.max(CrawlRun.started_at).label("last_attempt_at"),
+            func.max(CrawlRun.id).label("last_run_id"),
+        )
+        .where(CrawlRun.complex_no.in_(complex_nos))
+        .group_by(CrawlRun.complex_no)
+    ).all()
+    last_run_id_by_complex = {
+        int(row.complex_no): int(row.last_run_id) if row.last_run_id is not None else None
+        for row in latest_attempt_rows
+    }
+    last_attempt_at_by_complex = {int(row.complex_no): row.last_attempt_at for row in latest_attempt_rows}
+
+    all_run_ids = {
+        run_id
+        for run_id in [
+            *(item.get("latest_success_run_id") for item in latest_success_map.values()),
+            *last_run_id_by_complex.values(),
+        ]
+        if run_id is not None
+    }
+
+    run_meta_map: dict[int, dict[str, Any]] = {}
+    if all_run_ids:
+        run_rows = db.execute(
+            select(CrawlRun.id, CrawlRun.status, CrawlRun.error_message).where(CrawlRun.id.in_(all_run_ids))
+        ).all()
+        run_meta_map = {
+            int(row.id): {
+                "status": row.status,
+                "error_message": row.error_message,
+            }
+            for row in run_rows
+        }
+
+    latest_success_run_ids = [
+        item["latest_success_run_id"]
+        for item in latest_success_map.values()
+        if item.get("latest_success_run_id") is not None
+    ]
+    listing_count_by_run_id: dict[int, int] = {}
+    if latest_success_run_ids:
+        listing_count_rows = db.execute(
+            select(ListingSnapshot.crawl_run_id, func.count(ListingSnapshot.id))
+            .where(ListingSnapshot.crawl_run_id.in_(latest_success_run_ids))
+            .group_by(ListingSnapshot.crawl_run_id)
+        ).all()
+        listing_count_by_run_id = {
+            int(run_id): int(count)
+            for run_id, count in listing_count_rows
+        }
+
+    items: list[dict[str, Any]] = []
+    for watch in watches:
+        latest_success = latest_success_map.get(watch.complex_no, {})
+        latest_success_run_id = latest_success.get("latest_success_run_id")
+        last_run_id = last_run_id_by_complex.get(watch.complex_no)
+        last_run_meta = run_meta_map.get(last_run_id) if last_run_id else None
+        items.append(
+            {
+                "watch_id": watch.id,
+                "complex_no": watch.complex_no,
+                "complex_name": watch.complex_name,
+                "enabled": watch.enabled,
+                "created_at": watch.created_at.isoformat() if watch.created_at else None,
+                "latest_collected_at": (
+                    latest_success.get("latest_collected_at").isoformat()
+                    if latest_success.get("latest_collected_at")
+                    else None
+                ),
+                "latest_success_run_id": latest_success_run_id,
+                "latest_listing_count": (
+                    listing_count_by_run_id.get(latest_success_run_id) if latest_success_run_id is not None else None
+                ),
+                "last_attempt_at": (
+                    last_attempt_at_by_complex.get(watch.complex_no).isoformat()
+                    if last_attempt_at_by_complex.get(watch.complex_no)
+                    else None
+                ),
+                "last_run_status": last_run_meta.get("status") if last_run_meta else None,
+                "last_run_error": last_run_meta.get("error_message") if last_run_meta else None,
+                "auto_collect_target": watch.complex_no in scheduler_complex_nos,
+            }
+        )
+
+    return {
+        "count": len(items),
+        "auto_collect": {
+            "enabled": settings.scheduler_enabled,
+            "timezone": settings.scheduler_timezone,
+            "times": scheduler_times,
+            "poll_seconds": settings.scheduler_poll_seconds,
+            "configured_complex_count": len(scheduler_complex_nos),
+            "note": "자동수집 주기는 서버 전역 설정입니다. 계정별로 개별 주기를 다르게 두지는 않습니다.",
+        },
+        "items": items,
+    }
+
+
 @app.get("/me/watch-complexes/live")
 def me_watch_complexes_live(
     page: int = 1,
@@ -666,6 +866,26 @@ def me_add_watch_complex(
         "complex_name": watch.complex_name,
         "enabled": watch.enabled,
     }
+
+
+@app.delete("/me/watch-complexes/{watch_id}")
+def me_delete_watch_complex(
+    watch_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    watch = db.scalar(
+        select(UserWatchComplex).where(
+            UserWatchComplex.id == watch_id,
+            UserWatchComplex.user_id == current_user.id,
+        )
+    )
+    if watch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Watch complex not found")
+
+    db.delete(watch)
+    db.commit()
+    return {"ok": True, "deleted_watch_id": watch_id}
 
 
 @app.get("/me/presets")
