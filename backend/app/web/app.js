@@ -388,14 +388,38 @@ async function ingestNow() {
   const data = await api(`/crawler/ingest/${complexNo}?page=${page}`, {
     method: "POST",
   });
-  setStatus("#ingestStatus", `수집 완료: run=${data.crawl_run_id}, count=${data.listing_count}`);
+
+  const pagesFetched = Number(data.pages_fetched || 0);
+  const listingCount = Number(data.listing_count || 0);
+  const baseLine = `데이터 새로고침 완료: 단지 ${complexNo}에서 ${listingCount}건을 수집했습니다.`;
+  const pageLine = pagesFetched > 0 ? ` 확인한 페이지 수: ${pagesFetched}페이지.` : "";
+
+  let trendLine = "";
+  try {
+    const trend = await api(`/analytics/trend/${complexNo}?days=7`);
+    const series = Array.isArray(trend.series) ? trend.series : [];
+    const latest = series.at(-1);
+    if (latest && typeof latest === "object") {
+      const avg = Math.round(Number(latest.avg_price_manwon || 0));
+      const min = Number(latest.min_price_manwon || 0);
+      const max = Number(latest.max_price_manwon || 0);
+      const count = Number(latest.listing_count || 0);
+      trendLine = ` 최근 집계 기준 평균 ${avg}만원 / 최저 ${min}만원 / 최고 ${max}만원 (집계 매물 ${count}건).`;
+    } else {
+      trendLine = " 아직 분석 데이터가 충분하지 않아 시세 요약은 표시되지 않았습니다.";
+    }
+  } catch (_err) {
+    trendLine = " 수집은 완료됐지만 시세 요약 조회는 실패했습니다.";
+  }
+
+  setStatus("#ingestStatus", `${baseLine}${pageLine}${trendLine}`);
 }
 
 async function loadMeta() {
   const data = await api("/meta");
   setStatus(
     "#ingestStatus",
-    `env=${data.env || "n/a"}, interval=${data.crawler_interval_minutes}m, retry=${data.crawler_max_retry}`
+    `운영 정보: interval=${data.crawler_interval_minutes}분, retry=${data.crawler_max_retry}회. 일반 사용보다는 운영 점검용 정보입니다.`
   );
 }
 
