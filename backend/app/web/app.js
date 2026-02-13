@@ -10,7 +10,9 @@ const state = {
 const qs = (selector) => document.querySelector(selector);
 
 function setStatus(target, message) {
-  qs(target).textContent = message;
+  const node = qs(target);
+  if (!node) return;
+  node.textContent = message;
 }
 
 function authHeader() {
@@ -462,10 +464,11 @@ async function dispatchAlertNow() {
 
 function upsertChart(targetId, chartStateKey, config) {
   const canvas = qs(targetId);
+  if (!canvas) return;
   if (state[chartStateKey]) {
     state[chartStateKey].destroy();
   }
-  state[chartStateKey] = new Chart(canvas, config);
+  state[chartStateKey] = new Chart(canvas.getContext("2d"), config);
 }
 
 function renderBargainRows(items) {
@@ -495,8 +498,18 @@ async function loadTrend() {
   const complexNo = Number(qs("#trendComplexNo").value);
   const days = Number(qs("#trendDays").value || "30");
   const data = await api(`/analytics/trend/${complexNo}?days=${days}`);
-  const labels = data.series.map((row) => row.date);
-  const values = data.series.map((row) => row.avg_price_manwon);
+  const series = Array.isArray(data.series) ? data.series : [];
+  const labels = series.map((row) => row.date);
+  const values = series.map((row) => row.avg_price_manwon);
+
+  if (!labels.length) {
+    if (state.trendChart) {
+      state.trendChart.destroy();
+      state.trendChart = null;
+    }
+    setStatus("#trendStatus", "해당 조건에 표시할 시세 데이터가 없습니다.");
+    return;
+  }
 
   upsertChart("#trendChart", "trendChart", {
     type: "line",
@@ -513,8 +526,15 @@ async function loadTrend() {
         },
       ],
     },
-    options: { responsive: true, maintainAspectRatio: false },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { position: "top" } },
+    },
   });
+  setStatus("#trendStatus", `${labels.length}개 시점의 평균 시세 데이터를 표시했습니다.`);
 }
 
 async function loadCompare() {
@@ -538,6 +558,14 @@ async function loadCompare() {
     (data.series[String(no)] || data.series[no] || []).forEach((row) => labelsSet.add(row.date));
   });
   const labels = Array.from(labelsSet).sort();
+  if (!labels.length) {
+    if (state.compareChart) {
+      state.compareChart.destroy();
+      state.compareChart = null;
+    }
+    setStatus("#compareStatus", "비교 가능한 시세 데이터가 없습니다.");
+    return;
+  }
 
   const datasets = complexNos.map((no, idx) => {
     const rows = data.series[String(no)] || data.series[no] || [];
@@ -546,6 +574,7 @@ async function loadCompare() {
       label: `단지 ${no}`,
       data: labels.map((label) => map.get(label) ?? null),
       borderColor: palette[idx % palette.length],
+      backgroundColor: "transparent",
       spanGaps: true,
       tension: 0.2,
     };
@@ -554,8 +583,15 @@ async function loadCompare() {
   upsertChart("#compareChart", "compareChart", {
     type: "line",
     data: { labels, datasets },
-    options: { responsive: true, maintainAspectRatio: false },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { position: "top" } },
+    },
   });
+  setStatus("#compareStatus", `${complexNos.length}개 단지, ${labels.length}개 시점으로 비교했습니다.`);
 }
 
 async function loadBargains() {
@@ -566,6 +602,12 @@ async function loadBargains() {
     `/analytics/bargains/${complexNo}?lookback_days=${lookbackDays}&discount_threshold=${threshold}`
   );
   renderBargainRows(data.items || []);
+  setStatus(
+    "#bargainStatus",
+    `탐지 완료: 단지 ${complexNo}, 기간 ${lookbackDays}일, 기준 ${(threshold * 100).toFixed(1)}%로 ${
+      (data.items || []).length
+    }건을 찾았습니다.`
+  );
 }
 
 async function loadMyBargainAlerts() {
@@ -575,41 +617,46 @@ async function loadMyBargainAlerts() {
     `/me/alerts/bargains?lookback_days=${lookbackDays}&discount_threshold=${threshold}`
   );
   renderBargainRows(data.items || []);
+  setStatus(
+    "#bargainStatus",
+    `내 관심단지 전체 탐지 완료: 기간 ${lookbackDays}일, 기준 ${(threshold * 100).toFixed(1)}%, 후보 ${
+      (data.items || []).length
+    }건입니다.`
+  );
 }
 
-function bind(id, fn) {
+function bind(id, fn, errorTargets = ["#authStatus", "#ingestStatus"]) {
   qs(id).addEventListener("click", async () => {
     try {
       await fn();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setStatus("#authStatus", message);
-      setStatus("#ingestStatus", message);
+      errorTargets.forEach((target) => setStatus(target, message));
     }
   });
 }
 
-bind("#registerBtn", register);
-bind("#loginBtn", login);
-bind("#meBtn", me);
-bind("#logoutBtn", logout);
-bind("#searchComplexBtn", searchComplexes);
-bind("#parseComplexUrlBtn", parseComplexUrl);
-bind("#addWatchBtn", addWatchComplex);
-bind("#loadWatchBtn", loadWatchComplexes);
-bind("#loadLiveWatchBtn", loadLiveWatchComplexes);
-bind("#ingestBtn", ingestNow);
-bind("#metaBtn", loadMeta);
-bind("#billingMeBtn", loadBillingMe);
-bind("#billingCheckoutBtn", startDummyCheckout);
-bind("#billingCompleteBtn", completeDummyCheckout);
-bind("#loadNotifyBtn", loadNotificationSettings);
-bind("#saveNotifyBtn", saveNotificationSettings);
-bind("#dispatchAlertBtn", dispatchAlertNow);
-bind("#loadTrendBtn", loadTrend);
-bind("#loadCompareBtn", loadCompare);
-bind("#loadBargainBtn", loadBargains);
-bind("#loadMyBargainBtn", loadMyBargainAlerts);
+bind("#registerBtn", register, ["#authStatus"]);
+bind("#loginBtn", login, ["#authStatus"]);
+bind("#meBtn", me, ["#authStatus"]);
+bind("#logoutBtn", logout, ["#authStatus"]);
+bind("#searchComplexBtn", searchComplexes, ["#authStatus"]);
+bind("#parseComplexUrlBtn", parseComplexUrl, ["#authStatus"]);
+bind("#addWatchBtn", addWatchComplex, ["#authStatus"]);
+bind("#loadWatchBtn", loadWatchComplexes, ["#authStatus"]);
+bind("#loadLiveWatchBtn", loadLiveWatchComplexes, ["#authStatus"]);
+bind("#ingestBtn", ingestNow, ["#ingestStatus"]);
+bind("#metaBtn", loadMeta, ["#ingestStatus"]);
+bind("#billingMeBtn", loadBillingMe, ["#billingStatus"]);
+bind("#billingCheckoutBtn", startDummyCheckout, ["#billingStatus"]);
+bind("#billingCompleteBtn", completeDummyCheckout, ["#billingStatus"]);
+bind("#loadNotifyBtn", loadNotificationSettings, ["#notifyStatus"]);
+bind("#saveNotifyBtn", saveNotificationSettings, ["#notifyStatus"]);
+bind("#dispatchAlertBtn", dispatchAlertNow, ["#notifyStatus"]);
+bind("#loadTrendBtn", loadTrend, ["#trendStatus"]);
+bind("#loadCompareBtn", loadCompare, ["#compareStatus"]);
+bind("#loadBargainBtn", loadBargains, ["#bargainStatus"]);
+bind("#loadMyBargainBtn", loadMyBargainAlerts, ["#bargainStatus"]);
 qs("#watchComplexKeyword").addEventListener("input", onWatchComplexKeywordInput);
 
 if (state.token) {
