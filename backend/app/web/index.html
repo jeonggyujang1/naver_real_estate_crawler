@@ -126,12 +126,14 @@
 
       input,
       button,
-      textarea {
+      textarea,
+      select {
         font: inherit;
       }
 
       input,
-      textarea {
+      textarea,
+      select {
         width: 100%;
         padding: 10px 11px;
         border: 1px solid var(--border);
@@ -495,12 +497,23 @@
               <label for="ingestPage">수집 시작 페이지</label>
               <input id="ingestPage" type="number" value="1" min="1" />
             </div>
+            <div class="field">
+              <label for="ingestMaxPages">수집 페이지 수</label>
+              <input id="ingestMaxPages" type="number" value="1" min="1" max="20" />
+            </div>
+          </div>
+          <div class="row" style="margin-top: 8px">
+            <label class="pill"><input id="ingestForce" type="checkbox" /> 재사용 무시(강제 새수집)</label>
           </div>
           <div class="row" style="margin-top: 8px">
             <button id="ingestBtn">데이터 새로고침</button>
+            <button id="ingestWatchAllBtn" class="warn">관심단지 일괄 새로고침</button>
             <button id="metaBtn" class="alt">운영 정보 확인</button>
           </div>
-          <div class="hint">수집 시작 페이지를 1로 두면 최신 매물을 먼저 수집합니다.</div>
+          <div class="hint">
+            단건 새로고침은 입력한 단지 번호 1개를, 일괄 새로고침은 내 활성 관심단지를 한 번에 수집합니다.
+            재사용 무시를 켜면 동일 수집 구간이어도 새로 수집합니다.
+          </div>
           <div class="status" id="ingestStatus"></div>
         </section>
 
@@ -546,8 +559,31 @@
                 placeholder="0.08 = 8%"
               />
             </div>
+            <div class="field">
+              <label for="notifyInterestTradeType">관심 거래유형</label>
+              <select id="notifyInterestTradeType">
+                <option value="ALL">전체(기본)</option>
+                <option value="매매">매매</option>
+                <option value="전세">전세</option>
+                <option value="월세">월세</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="notifyMonthlyConversionRatePct">전월세전환율(%) 오버라이드</label>
+              <input
+                id="notifyMonthlyConversionRatePct"
+                type="number"
+                step="0.1"
+                min="0.1"
+                max="30"
+                placeholder="비워두면 시스템 기본 5.1%"
+              />
+            </div>
           </div>
-          <div class="hint">예: 기간 30일, 임계값 0.08이면 최근 30일 중앙값 대비 8% 이상 낮은 매물을 급매로 판단합니다.</div>
+          <div class="hint">
+            예: 기간 30일, 임계값 0.08이면 최근 30일 중앙값 대비 8% 이상 낮은 매물을 급매로 판단합니다.
+            월세 분석은 전월세전환율(기본 5.1%)로 환산가를 계산합니다.
+          </div>
           <div class="row" style="margin-top: 8px">
             <button id="loadNotifyBtn">설정 조회</button>
             <button id="saveNotifyBtn" class="alt">설정 저장</button>

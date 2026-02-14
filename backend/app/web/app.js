@@ -6,6 +6,8 @@ const state = {
   complexSearchDebounceTimer: null,
   complexSearchRequestId: 0,
   liveWatchRows: [],
+  analyticsTradeType: "ALL",
+  analyticsConversionRate: 5.1,
 };
 
 const qs = (selector) => document.querySelector(selector);
@@ -647,8 +649,13 @@ async function hydrateWatchDashboard() {
 
 async function ingestNow() {
   const complexNo = Number(qs("#ingestComplexNo").value);
-  const page = Number(qs("#ingestPage").value || "1");
-  const data = await api(`/crawler/ingest/${complexNo}?page=${page}`, {
+  const { page, maxPages, force } = getIngestOptions();
+  const query = new URLSearchParams({
+    page: String(page),
+    max_pages: String(maxPages),
+    force: force ? "true" : "false",
+  });
+  const data = await api(`/crawler/ingest/${complexNo}?${query.toString()}`, {
     method: "POST",
   });
 
@@ -681,6 +688,42 @@ async function ingestNow() {
   setStatus("#ingestStatus", `${baseLine}${pageLine}${trendLine}`);
 }
 
+function getIngestOptions() {
+  const page = Number(qs("#ingestPage").value || "1");
+  const maxPages = Number(qs("#ingestMaxPages")?.value || "1");
+  const force = Boolean(qs("#ingestForce")?.checked);
+  return { page, maxPages, force };
+}
+
+async function ingestWatchAll() {
+  const { page, maxPages, force } = getIngestOptions();
+  const data = await api("/me/watch-complexes/ingest", {
+    method: "POST",
+    body: JSON.stringify({
+      page,
+      max_pages: maxPages,
+      force,
+    }),
+  });
+
+  const failed = (data.results || []).filter((item) => item && item.ok === false);
+  const failedText = failed.length
+    ? ` 실패 예시: ${failed
+        .slice(0, 3)
+        .map((item) => `${item.complex_no}(${item.error})`)
+        .join(", ")}`
+    : "";
+  setStatus(
+    "#ingestStatus",
+    `일괄 수집 완료: 대상 ${data.requested_complex_count}개, 성공 ${data.success_count}개, 실패 ${data.failure_count}개, 재사용 ${data.reused_count}개, 총 ${data.total_listing_count}건.${failedText}`
+  );
+  try {
+    await loadCollectionStatus();
+  } catch (_err) {
+    // ignore collection refresh failure after bulk ingest.
+  }
+}
+
 async function loadMeta() {
   const data = await api("/meta");
   setStatus(
@@ -698,10 +741,21 @@ async function loadNotificationSettings() {
   qs("#notifyBargainEnabled").checked = Boolean(data.bargain_alert_enabled);
   qs("#notifyLookbackDays").value = String(data.bargain_lookback_days || 30);
   qs("#notifyDiscountThreshold").value = String(data.bargain_discount_threshold || 0.08);
-  setStatus("#notifyStatus", "알림 설정 조회 완료");
+  qs("#notifyInterestTradeType").value = data.interest_trade_type || "ALL";
+  qs("#notifyMonthlyConversionRatePct").value =
+    data.monthly_rent_conversion_rate_pct == null ? "" : String(data.monthly_rent_conversion_rate_pct);
+  state.analyticsTradeType = data.interest_trade_type || "ALL";
+  state.analyticsConversionRate = Number(data.resolved_monthly_conversion_rate_pct || 5.1);
+  setStatus(
+    "#notifyStatus",
+    `알림 설정 조회 완료 (관심유형=${state.analyticsTradeType}, 적용 전월세전환율=${state.analyticsConversionRate}%)`
+  );
 }
 
 async function saveNotificationSettings() {
+  const tradeType = qs("#notifyInterestTradeType").value || "ALL";
+  const monthlyRateRaw = qs("#notifyMonthlyConversionRatePct").value.trim();
+  const monthlyRate = monthlyRateRaw ? Number(monthlyRateRaw) : null;
   const payload = {
     email_enabled: qs("#notifyEmailEnabled").checked,
     email_address: qs("#notifyEmailAddress").value.trim() || null,
@@ -710,12 +764,20 @@ async function saveNotificationSettings() {
     bargain_alert_enabled: qs("#notifyBargainEnabled").checked,
     bargain_lookback_days: Number(qs("#notifyLookbackDays").value || "30"),
     bargain_discount_threshold: Number(qs("#notifyDiscountThreshold").value || "0.08"),
+    interest_trade_type: tradeType,
+    monthly_rent_conversion_rate_pct: monthlyRate,
+    monthly_rent_conversion_rate_use_default: monthlyRateRaw === "",
   };
-  await api("/me/notification-settings", {
+  const data = await api("/me/notification-settings", {
     method: "PUT",
     body: JSON.stringify(payload),
   });
-  setStatus("#notifyStatus", "알림 설정 저장 완료");
+  state.analyticsTradeType = data.interest_trade_type || "ALL";
+  state.analyticsConversionRate = Number(data.resolved_monthly_conversion_rate_pct || 5.1);
+  setStatus(
+    "#notifyStatus",
+    `알림 설정 저장 완료 (관심유형=${state.analyticsTradeType}, 적용 전월세전환율=${state.analyticsConversionRate}%)`
+  );
 }
 
 async function dispatchAlertNow() {
@@ -744,13 +806,19 @@ function renderBargainRows(items) {
   }
 
   items.forEach((item) => {
+    const effective =
+      item.effective_price_manwon == null ? null : Number(item.effective_price_manwon);
+    const priceLabel = item.deal_price_text || "-";
+    const priceText = Number.isFinite(effective)
+      ? `${priceLabel} (환산 ${Math.round(effective)}만원)`
+      : priceLabel;
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${item.complex_name || item.complex_no || "-"}</td>
       <td>${item.article_no}</td>
       <td>${item.article_name || "-"}</td>
       <td>${item.trade_type_name || "-"}</td>
-      <td>${item.deal_price_text || "-"}</td>
+      <td>${priceText}</td>
       <td>${Math.round(item.baseline_median_manwon)}</td>
       <td>${(item.discount_rate * 100).toFixed(2)}%</td>
     `;
@@ -758,10 +826,28 @@ function renderBargainRows(items) {
   });
 }
 
+function getAnalyticsPreferences() {
+  const tradeType = qs("#notifyInterestTradeType")?.value || state.analyticsTradeType || "ALL";
+  const monthlyRateRaw = qs("#notifyMonthlyConversionRatePct")?.value?.trim() || "";
+  const monthlyRate = monthlyRateRaw ? Number(monthlyRateRaw) : state.analyticsConversionRate;
+  return {
+    tradeType,
+    monthlyRate: Number.isFinite(monthlyRate) && monthlyRate > 0 ? monthlyRate : 5.1,
+  };
+}
+
 async function loadTrend() {
   const complexNo = Number(qs("#trendComplexNo").value);
   const days = Number(qs("#trendDays").value || "30");
-  const data = await api(`/analytics/trend/${complexNo}?days=${days}`);
+  const pref = getAnalyticsPreferences();
+  const query = new URLSearchParams({
+    days: String(days),
+    monthly_conversion_rate_pct: String(pref.monthlyRate),
+  });
+  if (pref.tradeType !== "ALL") {
+    query.set("trade_type_name", pref.tradeType);
+  }
+  const data = await api(`/analytics/trend/${complexNo}?${query.toString()}`);
   const series = Array.isArray(data.series) ? data.series : [];
   const labels = series.map((row) => row.date);
   const values = series.map((row) => row.avg_price_manwon);
@@ -798,7 +884,10 @@ async function loadTrend() {
       plugins: { legend: { position: "top" } },
     },
   });
-  setStatus("#trendStatus", `${labels.length}개 시점의 평균 시세 데이터를 표시했습니다.`);
+  setStatus(
+    "#trendStatus",
+    `${labels.length}개 시점의 평균 시세 데이터를 표시했습니다. (유형=${data.trade_type_name}, 전환율=${data.monthly_conversion_rate_pct}%)`
+  );
 }
 
 async function loadCompare() {
@@ -812,6 +901,11 @@ async function loadCompare() {
 
   const query = new URLSearchParams();
   query.set("days", String(days));
+  const pref = getAnalyticsPreferences();
+  query.set("monthly_conversion_rate_pct", String(pref.monthlyRate));
+  if (pref.tradeType !== "ALL") {
+    query.set("trade_type_name", pref.tradeType);
+  }
   complexNos.forEach((no) => query.append("complex_nos", String(no)));
 
   const data = await api(`/analytics/compare?${query.toString()}`);
@@ -855,20 +949,30 @@ async function loadCompare() {
       plugins: { legend: { position: "top" } },
     },
   });
-  setStatus("#compareStatus", `${complexNos.length}개 단지, ${labels.length}개 시점으로 비교했습니다.`);
+  setStatus(
+    "#compareStatus",
+    `${complexNos.length}개 단지, ${labels.length}개 시점으로 비교했습니다. (유형=${data.trade_type_name}, 전환율=${data.monthly_conversion_rate_pct}%)`
+  );
 }
 
 async function loadBargains() {
   const complexNo = Number(qs("#bargainComplexNo").value);
   const lookbackDays = Number(qs("#bargainDays").value || "30");
   const threshold = Number(qs("#bargainThreshold").value || "0.08");
-  const data = await api(
-    `/analytics/bargains/${complexNo}?lookback_days=${lookbackDays}&discount_threshold=${threshold}`
-  );
+  const pref = getAnalyticsPreferences();
+  const query = new URLSearchParams({
+    lookback_days: String(lookbackDays),
+    discount_threshold: String(threshold),
+    monthly_conversion_rate_pct: String(pref.monthlyRate),
+  });
+  if (pref.tradeType !== "ALL") {
+    query.set("trade_type_name", pref.tradeType);
+  }
+  const data = await api(`/analytics/bargains/${complexNo}?${query.toString()}`);
   renderBargainRows(data.items || []);
   setStatus(
     "#bargainStatus",
-    `탐지 완료: 단지 ${complexNo}, 기간 ${lookbackDays}일, 기준 ${(threshold * 100).toFixed(1)}%로 ${
+    `탐지 완료: 단지 ${complexNo}, 유형 ${data.trade_type_name}, 전환율 ${data.monthly_conversion_rate_pct}%, 기간 ${lookbackDays}일, 기준 ${(threshold * 100).toFixed(1)}%로 ${
       (data.items || []).length
     }건을 찾았습니다.`
   );
@@ -877,13 +981,20 @@ async function loadBargains() {
 async function loadMyBargainAlerts() {
   const lookbackDays = Number(qs("#bargainDays").value || "30");
   const threshold = Number(qs("#bargainThreshold").value || "0.08");
-  const data = await api(
-    `/me/alerts/bargains?lookback_days=${lookbackDays}&discount_threshold=${threshold}`
-  );
+  const pref = getAnalyticsPreferences();
+  const query = new URLSearchParams({
+    lookback_days: String(lookbackDays),
+    discount_threshold: String(threshold),
+    monthly_conversion_rate_pct: String(pref.monthlyRate),
+  });
+  if (pref.tradeType !== "ALL") {
+    query.set("trade_type_name", pref.tradeType);
+  }
+  const data = await api(`/me/alerts/bargains?${query.toString()}`);
   renderBargainRows(data.items || []);
   setStatus(
     "#bargainStatus",
-    `내 관심단지 전체 탐지 완료: 기간 ${lookbackDays}일, 기준 ${(threshold * 100).toFixed(1)}%, 후보 ${
+    `내 관심단지 전체 탐지 완료: 유형 ${data.trade_type_name}, 전환율 ${data.monthly_conversion_rate_pct || pref.monthlyRate}%, 기간 ${lookbackDays}일, 기준 ${(threshold * 100).toFixed(1)}%, 후보 ${
       (data.items || []).length
     }건입니다.`
   );
@@ -915,6 +1026,7 @@ bind("#loadCollectionStatusBtn", loadCollectionStatus, ["#collectionStatusNote"]
 bind("#loadSchedulerConfigBtn", loadSchedulerConfig, ["#collectionStatusNote"]);
 bind("#saveSchedulerConfigBtn", saveSchedulerConfig, ["#collectionStatusNote"]);
 bind("#ingestBtn", ingestNow, ["#ingestStatus"]);
+bind("#ingestWatchAllBtn", ingestWatchAll, ["#ingestStatus"]);
 bind("#metaBtn", loadMeta, ["#ingestStatus"]);
 bind("#billingMeBtn", loadBillingMe, ["#billingStatus"]);
 bind("#billingCheckoutBtn", startDummyCheckout, ["#billingStatus"]);

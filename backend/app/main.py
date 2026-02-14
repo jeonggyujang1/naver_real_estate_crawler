@@ -26,7 +26,7 @@ from app.models import (
     UserPreset,
     UserWatchComplex,
 )
-from app.services.alerts import collect_user_bargains, dispatch_user_bargain_alerts
+from app.services.alerts import dispatch_user_bargain_alerts
 from app.services.analytics import (
     detect_bargains,
     fetch_compare_trend,
@@ -294,6 +294,50 @@ def _resolve_trade_type_and_conversion(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid monthly_conversion_rate_pct")
 
     return resolved_trade_type_name, resolved_monthly_conversion_rate_pct
+
+
+def _collect_user_bargains_with_preferences(
+    *,
+    db: Session,
+    user: User,
+    lookback_days: int,
+    discount_threshold: float,
+    requested_trade_type_name: str | None,
+    requested_monthly_conversion_rate_pct: float | None,
+    only_complex_no: int | None = None,
+) -> tuple[list[dict[str, Any]], str, float]:
+    resolved_trade_type_name, resolved_monthly_conversion_rate_pct = _resolve_trade_type_and_conversion(
+        db=db,
+        requested_trade_type_name=requested_trade_type_name,
+        requested_monthly_conversion_rate_pct=requested_monthly_conversion_rate_pct,
+        user=user,
+    )
+
+    stmt = select(UserWatchComplex).where(
+        UserWatchComplex.user_id == user.id,
+        UserWatchComplex.enabled.is_(True),
+    )
+    if only_complex_no is not None:
+        stmt = stmt.where(UserWatchComplex.complex_no == only_complex_no)
+    watches = db.scalars(stmt).all()
+
+    alerts: list[dict[str, Any]] = []
+    for watch in watches:
+        rows = detect_bargains(
+            db=db,
+            complex_no=watch.complex_no,
+            lookback_days=lookback_days,
+            discount_threshold=discount_threshold,
+            trade_type_name=resolved_trade_type_name,
+            monthly_conversion_rate_pct=resolved_monthly_conversion_rate_pct,
+        )
+        for row in rows:
+            row["complex_no"] = watch.complex_no
+            row["complex_name"] = watch.complex_name
+            alerts.append(row)
+
+    alerts.sort(key=lambda row: float(row.get("discount_rate") or 0.0), reverse=True)
+    return alerts, resolved_trade_type_name, resolved_monthly_conversion_rate_pct
 
 
 def _parse_scheduler_times(raw: str) -> list[str]:
@@ -1207,6 +1251,100 @@ def me_add_watch_complex(
     }
 
 
+@app.post("/me/watch-complexes/ingest")
+def me_ingest_watch_complexes(
+    page: int = Body(1, embed=True),
+    max_pages: int = Body(1, embed=True),
+    force: bool = Body(False, embed=True),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    if page < 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="page must be >= 1")
+    if max_pages < 1 or max_pages > 20:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="max_pages must be between 1 and 20")
+
+    watches = db.scalars(
+        select(UserWatchComplex)
+        .where(
+            UserWatchComplex.user_id == current_user.id,
+            UserWatchComplex.enabled.is_(True),
+        )
+        .order_by(UserWatchComplex.created_at.desc())
+    ).all()
+    if not watches:
+        return {
+            "requested_complex_count": 0,
+            "processed_complex_count": 0,
+            "success_count": 0,
+            "failure_count": 0,
+            "reused_count": 0,
+            "total_listing_count": 0,
+            "page": page,
+            "max_pages": max_pages,
+            "force": force,
+            "results": [],
+        }
+
+    by_complex_name: dict[int, str | None] = {}
+    for watch in watches:
+        if watch.complex_no not in by_complex_name:
+            by_complex_name[watch.complex_no] = watch.complex_name
+
+    results: list[dict[str, Any]] = []
+    success_count = 0
+    failure_count = 0
+    reused_count = 0
+    total_listing_count = 0
+
+    for complex_no in sorted(by_complex_name.keys()):
+        try:
+            ingest_result = ingest_complex_snapshot(
+                db=db,
+                settings=settings,
+                complex_no=complex_no,
+                page=page,
+                max_pages=max_pages,
+                reuse_window_hours=0 if force else settings.crawler_reuse_window_hours,
+            )
+            success_count += 1
+            reused_count += int(ingest_result.get("reused") or 0)
+            total_listing_count += int(ingest_result.get("listing_count") or 0)
+            results.append(
+                {
+                    "complex_no": complex_no,
+                    "complex_name": by_complex_name.get(complex_no),
+                    "ok": True,
+                    **ingest_result,
+                }
+            )
+        except RuntimeError as exc:
+            failure_count += 1
+            mapped = _map_crawler_runtime_error(exc)
+            results.append(
+                {
+                    "complex_no": complex_no,
+                    "complex_name": by_complex_name.get(complex_no),
+                    "ok": False,
+                    "status_code": mapped.status_code,
+                    "error": mapped.detail,
+                }
+            )
+
+    return {
+        "requested_complex_count": len(by_complex_name),
+        "processed_complex_count": len(results),
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "reused_count": reused_count,
+        "total_listing_count": total_listing_count,
+        "page": page,
+        "max_pages": max_pages,
+        "force": force,
+        "results": results,
+    }
+
+
 @app.delete("/me/watch-complexes/{watch_id}")
 def me_delete_watch_complex(
     watch_id: int,
@@ -1294,24 +1432,20 @@ def me_bargain_alerts(
     lookback_days: int | None = None,
     discount_threshold: float | None = None,
     trade_type_name: str | None = None,
+    monthly_conversion_rate_pct: float | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     setting = db.get(UserNotificationSetting, current_user.id)
     resolved_lookback_days = lookback_days or (setting.bargain_lookback_days if setting else 30)
     resolved_discount_threshold = discount_threshold or (setting.bargain_discount_threshold if setting else 0.08)
-    resolved_trade_type_name, _resolved_monthly_conversion_rate_pct = _resolve_trade_type_and_conversion(
+    alerts, resolved_trade_type_name, resolved_monthly_conversion_rate_pct = _collect_user_bargains_with_preferences(
         db=db,
-        requested_trade_type_name=trade_type_name,
-        requested_monthly_conversion_rate_pct=None,
         user=current_user,
-    )
-    alerts = collect_user_bargains(
-        db=db,
-        user_id=current_user.id,
         lookback_days=resolved_lookback_days,
         discount_threshold=resolved_discount_threshold,
-        trade_type_name=resolved_trade_type_name,
+        requested_trade_type_name=trade_type_name,
+        requested_monthly_conversion_rate_pct=monthly_conversion_rate_pct,
     )
     return {
         "count": len(alerts),
@@ -1319,6 +1453,7 @@ def me_bargain_alerts(
         "lookback_days": resolved_lookback_days,
         "discount_threshold": resolved_discount_threshold,
         "trade_type_name": resolved_trade_type_name,
+        "monthly_conversion_rate_pct": resolved_monthly_conversion_rate_pct,
     }
 
 
@@ -1360,6 +1495,7 @@ def me_update_notification_settings(
     bargain_discount_threshold: float | None = Body(default=None, embed=True),
     interest_trade_type: str | None = Body(default=None, embed=True),
     monthly_rent_conversion_rate_pct: float | None = Body(default=None, embed=True),
+    monthly_rent_conversion_rate_use_default: bool | None = Body(default=None, embed=True),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
@@ -1385,6 +1521,8 @@ def me_update_notification_settings(
         setting.bargain_discount_threshold = bargain_discount_threshold
     if interest_trade_type is not None:
         setting.interest_trade_type = _normalize_interest_trade_type(interest_trade_type)
+    if monthly_rent_conversion_rate_use_default:
+        setting.monthly_rent_conversion_rate_pct = None
     if monthly_rent_conversion_rate_pct is not None:
         if monthly_rent_conversion_rate_pct < 0.1 or monthly_rent_conversion_rate_pct > 30.0:
             raise HTTPException(
@@ -1428,11 +1566,13 @@ def me_dispatch_bargain_alerts(
     if setting is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Notification setting not configured")
 
-    items = collect_user_bargains(
+    items, resolved_trade_type_name, resolved_monthly_conversion_rate_pct = _collect_user_bargains_with_preferences(
         db=db,
-        user_id=current_user.id,
+        user=current_user,
         lookback_days=setting.bargain_lookback_days,
         discount_threshold=setting.bargain_discount_threshold,
+        requested_trade_type_name=setting.interest_trade_type,
+        requested_monthly_conversion_rate_pct=setting.monthly_rent_conversion_rate_pct,
     )
     dispatch_result = dispatch_user_bargain_alerts(
         db=db,
@@ -1445,5 +1585,7 @@ def me_dispatch_bargain_alerts(
         db.commit()
     return {
         "candidate_count": len(items),
+        "trade_type_name": resolved_trade_type_name,
+        "monthly_conversion_rate_pct": resolved_monthly_conversion_rate_pct,
         **dispatch_result,
     }
