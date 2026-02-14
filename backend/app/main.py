@@ -27,7 +27,12 @@ from app.models import (
     UserWatchComplex,
 )
 from app.services.alerts import collect_user_bargains, dispatch_user_bargain_alerts
-from app.services.analytics import detect_bargains, fetch_compare_trend, fetch_complex_trend
+from app.services.analytics import (
+    detect_bargains,
+    fetch_compare_trend,
+    fetch_complex_trend,
+    normalize_trade_type_name,
+)
 from app.services.auth import (
     create_access_token,
     create_refresh_token,
@@ -207,6 +212,88 @@ def _enforce_registration_rate_limit(client_key: str) -> None:
             detail="회원가입 요청이 너무 많습니다. 잠시 후 다시 시도해주세요.",
         )
     attempts.append(now)
+
+
+def _resolve_optional_current_user(authorization: str | None, db: Session) -> User | None:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.split(" ", 1)[1].strip()
+    decoded = _decode_access_token_claims(token)
+    if decoded is None:
+        return None
+    user_id, jti, _exp_ts = decoded
+    revoked = db.scalar(
+        select(AuthAccessTokenRevocation.id).where(
+            AuthAccessTokenRevocation.user_id == user_id,
+            AuthAccessTokenRevocation.jti == jti,
+            AuthAccessTokenRevocation.expires_at >= datetime.now(UTC),
+        )
+    )
+    if revoked is not None:
+        return None
+    user = db.get(User, user_id)
+    if user is None or not user.is_active:
+        return None
+    return user
+
+
+def _get_or_create_notification_setting(db: Session, user: User) -> UserNotificationSetting:
+    setting = db.get(UserNotificationSetting, user.id)
+    if setting is None:
+        setting = UserNotificationSetting(
+            user_id=user.id,
+            email_enabled=True,
+            email_address=user.email,
+        )
+        db.add(setting)
+        db.flush()
+    return setting
+
+
+def _normalize_interest_trade_type(raw: str | None) -> str:
+    normalized = (raw or "").strip()
+    if not normalized or normalized.upper() == "ALL":
+        return "ALL"
+    if normalized not in {"매매", "전세", "월세"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid interest_trade_type")
+    return normalized
+
+
+def _resolve_trade_type_and_conversion(
+    *,
+    db: Session,
+    requested_trade_type_name: str | None,
+    requested_monthly_conversion_rate_pct: float | None,
+    user: User | None,
+) -> tuple[str, float]:
+    resolved_trade_type_name = normalize_trade_type_name(requested_trade_type_name)
+    resolved_monthly_conversion_rate_pct = settings.jeonse_monthly_conversion_rate_default
+
+    setting: UserNotificationSetting | None = None
+    if user is not None:
+        setting = db.get(UserNotificationSetting, user.id)
+
+    if resolved_trade_type_name is None and setting is not None:
+        preferred = _normalize_interest_trade_type(setting.interest_trade_type)
+        if preferred != "ALL":
+            resolved_trade_type_name = preferred
+
+    if requested_monthly_conversion_rate_pct is not None:
+        resolved_monthly_conversion_rate_pct = float(requested_monthly_conversion_rate_pct)
+    elif setting is not None and setting.monthly_rent_conversion_rate_pct is not None:
+        resolved_monthly_conversion_rate_pct = float(setting.monthly_rent_conversion_rate_pct)
+
+    if resolved_trade_type_name is None:
+        # Preserve prior behavior unless user preference explicitly selects another trade type.
+        resolved_trade_type_name = "매매"
+
+    if (
+        resolved_monthly_conversion_rate_pct < 0.1
+        or resolved_monthly_conversion_rate_pct > 30.0
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid monthly_conversion_rate_pct")
+
+    return resolved_trade_type_name, resolved_monthly_conversion_rate_pct
 
 
 def _parse_scheduler_times(raw: str) -> list[str]:
@@ -441,18 +528,29 @@ def analytics_trend(
     complex_no: int,
     days: int = 30,
     trade_type_name: str | None = None,
+    monthly_conversion_rate_pct: float | None = None,
+    authorization: Annotated[str | None, Header()] = None,
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    optional_user = _resolve_optional_current_user(authorization=authorization, db=db)
+    resolved_trade_type_name, resolved_monthly_conversion_rate_pct = _resolve_trade_type_and_conversion(
+        db=db,
+        requested_trade_type_name=trade_type_name,
+        requested_monthly_conversion_rate_pct=monthly_conversion_rate_pct,
+        user=optional_user,
+    )
     rows = fetch_complex_trend(
         db=db,
         complex_no=complex_no,
         days=days,
-        trade_type_name=trade_type_name,
+        trade_type_name=resolved_trade_type_name,
+        monthly_conversion_rate_pct=resolved_monthly_conversion_rate_pct,
     )
     return {
         "complex_no": complex_no,
         "days": days,
-        "trade_type_name": trade_type_name,
+        "trade_type_name": resolved_trade_type_name,
+        "monthly_conversion_rate_pct": resolved_monthly_conversion_rate_pct,
         "series": rows,
     }
 
@@ -462,6 +560,7 @@ def analytics_compare(
     complex_nos: list[int] = Query(..., min_length=2),
     days: int = 30,
     trade_type_name: str | None = None,
+    monthly_conversion_rate_pct: float | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
@@ -470,15 +569,24 @@ def analytics_compare(
     except BillingError as exc:
         raise _map_billing_error(exc) from exc
 
+    resolved_trade_type_name, resolved_monthly_conversion_rate_pct = _resolve_trade_type_and_conversion(
+        db=db,
+        requested_trade_type_name=trade_type_name,
+        requested_monthly_conversion_rate_pct=monthly_conversion_rate_pct,
+        user=current_user,
+    )
+
     return {
         "complex_nos": complex_nos,
         "days": days,
-        "trade_type_name": trade_type_name,
+        "trade_type_name": resolved_trade_type_name,
+        "monthly_conversion_rate_pct": resolved_monthly_conversion_rate_pct,
         "series": fetch_compare_trend(
             db=db,
             complex_nos=complex_nos,
             days=days,
-            trade_type_name=trade_type_name,
+            trade_type_name=resolved_trade_type_name,
+            monthly_conversion_rate_pct=resolved_monthly_conversion_rate_pct,
         ),
     }
 
@@ -489,20 +597,31 @@ def analytics_bargains(
     lookback_days: int = 30,
     discount_threshold: float = 0.08,
     trade_type_name: str | None = None,
+    monthly_conversion_rate_pct: float | None = None,
+    authorization: Annotated[str | None, Header()] = None,
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    optional_user = _resolve_optional_current_user(authorization=authorization, db=db)
+    resolved_trade_type_name, resolved_monthly_conversion_rate_pct = _resolve_trade_type_and_conversion(
+        db=db,
+        requested_trade_type_name=trade_type_name,
+        requested_monthly_conversion_rate_pct=monthly_conversion_rate_pct,
+        user=optional_user,
+    )
     items = detect_bargains(
         db=db,
         complex_no=complex_no,
         lookback_days=lookback_days,
         discount_threshold=discount_threshold,
-        trade_type_name=trade_type_name,
+        trade_type_name=resolved_trade_type_name,
+        monthly_conversion_rate_pct=resolved_monthly_conversion_rate_pct,
     )
     return {
         "complex_no": complex_no,
         "lookback_days": lookback_days,
         "discount_threshold": discount_threshold,
-        "trade_type_name": trade_type_name,
+        "trade_type_name": resolved_trade_type_name,
+        "monthly_conversion_rate_pct": resolved_monthly_conversion_rate_pct,
         "count": len(items),
         "items": items,
     }
@@ -1181,19 +1300,25 @@ def me_bargain_alerts(
     setting = db.get(UserNotificationSetting, current_user.id)
     resolved_lookback_days = lookback_days or (setting.bargain_lookback_days if setting else 30)
     resolved_discount_threshold = discount_threshold or (setting.bargain_discount_threshold if setting else 0.08)
+    resolved_trade_type_name, _resolved_monthly_conversion_rate_pct = _resolve_trade_type_and_conversion(
+        db=db,
+        requested_trade_type_name=trade_type_name,
+        requested_monthly_conversion_rate_pct=None,
+        user=current_user,
+    )
     alerts = collect_user_bargains(
         db=db,
         user_id=current_user.id,
         lookback_days=resolved_lookback_days,
         discount_threshold=resolved_discount_threshold,
-        trade_type_name=trade_type_name,
+        trade_type_name=resolved_trade_type_name,
     )
     return {
         "count": len(alerts),
         "items": alerts,
         "lookback_days": resolved_lookback_days,
         "discount_threshold": resolved_discount_threshold,
-        "trade_type_name": trade_type_name,
+        "trade_type_name": resolved_trade_type_name,
     }
 
 
@@ -1202,16 +1327,9 @@ def me_notification_settings(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    setting = db.get(UserNotificationSetting, current_user.id)
-    if setting is None:
-        setting = UserNotificationSetting(
-            user_id=current_user.id,
-            email_enabled=True,
-            email_address=current_user.email,
-        )
-        db.add(setting)
-        db.commit()
-        db.refresh(setting)
+    setting = _get_or_create_notification_setting(db=db, user=current_user)
+    db.commit()
+    db.refresh(setting)
     return {
         "email_enabled": setting.email_enabled,
         "email_address": setting.email_address,
@@ -1220,6 +1338,13 @@ def me_notification_settings(
         "bargain_alert_enabled": setting.bargain_alert_enabled,
         "bargain_lookback_days": setting.bargain_lookback_days,
         "bargain_discount_threshold": setting.bargain_discount_threshold,
+        "interest_trade_type": _normalize_interest_trade_type(setting.interest_trade_type),
+        "monthly_rent_conversion_rate_pct": setting.monthly_rent_conversion_rate_pct,
+        "resolved_monthly_conversion_rate_pct": (
+            setting.monthly_rent_conversion_rate_pct
+            if setting.monthly_rent_conversion_rate_pct is not None
+            else settings.jeonse_monthly_conversion_rate_default
+        ),
         "updated_at": setting.updated_at.isoformat() if setting.updated_at else None,
     }
 
@@ -1233,17 +1358,12 @@ def me_update_notification_settings(
     bargain_alert_enabled: bool | None = Body(default=None, embed=True),
     bargain_lookback_days: int | None = Body(default=None, embed=True),
     bargain_discount_threshold: float | None = Body(default=None, embed=True),
+    interest_trade_type: str | None = Body(default=None, embed=True),
+    monthly_rent_conversion_rate_pct: float | None = Body(default=None, embed=True),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    setting = db.get(UserNotificationSetting, current_user.id)
-    if setting is None:
-        setting = UserNotificationSetting(
-            user_id=current_user.id,
-            email_enabled=True,
-            email_address=current_user.email,
-        )
-        db.add(setting)
+    setting = _get_or_create_notification_setting(db=db, user=current_user)
 
     if email_enabled is not None:
         setting.email_enabled = email_enabled
@@ -1263,6 +1383,15 @@ def me_update_notification_settings(
         if bargain_discount_threshold <= 0 or bargain_discount_threshold >= 1:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid bargain_discount_threshold")
         setting.bargain_discount_threshold = bargain_discount_threshold
+    if interest_trade_type is not None:
+        setting.interest_trade_type = _normalize_interest_trade_type(interest_trade_type)
+    if monthly_rent_conversion_rate_pct is not None:
+        if monthly_rent_conversion_rate_pct < 0.1 or monthly_rent_conversion_rate_pct > 30.0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid monthly_rent_conversion_rate_pct",
+            )
+        setting.monthly_rent_conversion_rate_pct = monthly_rent_conversion_rate_pct
 
     db.commit()
     db.refresh(setting)
@@ -1274,6 +1403,13 @@ def me_update_notification_settings(
         "bargain_alert_enabled": setting.bargain_alert_enabled,
         "bargain_lookback_days": setting.bargain_lookback_days,
         "bargain_discount_threshold": setting.bargain_discount_threshold,
+        "interest_trade_type": _normalize_interest_trade_type(setting.interest_trade_type),
+        "monthly_rent_conversion_rate_pct": setting.monthly_rent_conversion_rate_pct,
+        "resolved_monthly_conversion_rate_pct": (
+            setting.monthly_rent_conversion_rate_pct
+            if setting.monthly_rent_conversion_rate_pct is not None
+            else settings.jeonse_monthly_conversion_rate_default
+        ),
         "updated_at": setting.updated_at.isoformat() if setting.updated_at else None,
     }
 
