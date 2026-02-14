@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -8,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_session_factory
 from app.models import SchedulerConfig, User, UserNotificationSetting, UserWatchComplex
-from app.services.alerts import collect_user_bargains, dispatch_user_bargain_alerts
+from app.services.alerts import collect_user_bargains, dispatch_user_bargain_alerts, dispatch_user_daily_briefing
 from app.services.ingest import ingest_complex_snapshot
 from app.settings import Settings
 
@@ -86,11 +87,15 @@ class CrawlScheduler:
             if setting is None or not setting.bargain_alert_enabled:
                 continue
 
+            trade_type_name = self._resolve_interest_trade_type(setting)
+            monthly_conversion_rate_pct = self._resolve_monthly_conversion_rate(setting)
             items = collect_user_bargains(
                 db=db,
                 user_id=user_id,
                 lookback_days=setting.bargain_lookback_days,
                 discount_threshold=setting.bargain_discount_threshold,
+                trade_type_name=trade_type_name,
+                monthly_conversion_rate_pct=monthly_conversion_rate_pct,
                 only_complex_no=complex_no,
             )
             dispatch_result = dispatch_user_bargain_alerts(
@@ -109,6 +114,80 @@ class CrawlScheduler:
                     dispatch_result["email_sent"],
                     dispatch_result["telegram_sent"],
                 )
+
+    def _resolve_interest_trade_type(self, setting: UserNotificationSetting) -> str:
+        normalized = (setting.interest_trade_type or "").strip()
+        if not normalized or normalized.upper() == "ALL":
+            return "매매"
+        if normalized in {"매매", "전세", "월세"}:
+            return normalized
+        return "매매"
+
+    def _resolve_monthly_conversion_rate(self, setting: UserNotificationSetting) -> float:
+        if setting.monthly_rent_conversion_rate_pct is not None:
+            return float(setting.monthly_rent_conversion_rate_pct)
+        return float(self.settings.jeonse_monthly_conversion_rate_default)
+
+    def _dispatch_daily_briefings_for_first_time(
+        self,
+        db: Session,
+        timezone: ZoneInfo,
+        hhmm: str,
+        times: set[str],
+    ) -> None:
+        first_time = sorted(times)[0]
+        if hhmm != first_time:
+            return
+
+        watcher_user_ids = db.scalars(
+            select(UserWatchComplex.user_id).where(UserWatchComplex.enabled.is_(True)).distinct()
+        ).all()
+        if not watcher_user_ids:
+            return
+
+        today_key = datetime.now(timezone).strftime("%Y-%m-%d")
+        for user_id in set(watcher_user_ids):
+            try:
+                self._dispatch_daily_briefing_for_user(
+                    db=db,
+                    user_id=user_id,
+                    briefing_date_key=today_key,
+                )
+            except Exception:
+                db.rollback()
+                logger.exception("Scheduled daily briefing failed for user. user_id=%s", user_id)
+
+    def _dispatch_daily_briefing_for_user(
+        self,
+        db: Session,
+        user_id: UUID,
+        briefing_date_key: str,
+    ) -> None:
+        user = db.get(User, user_id)
+        if user is None or not user.is_active:
+            return
+
+        setting = db.get(UserNotificationSetting, user_id)
+        if setting is None:
+            return
+        if not (setting.email_enabled or setting.telegram_enabled):
+            return
+
+        result = dispatch_user_daily_briefing(
+            db=db,
+            settings=self.settings,
+            user=user,
+            notification_setting=setting,
+            briefing_date_key=briefing_date_key,
+        )
+        if result["email_sent"] or result["telegram_sent"]:
+            db.commit()
+            logger.info(
+                "Scheduled daily briefing sent. user_id=%s email=%s telegram=%s",
+                user_id,
+                result["email_sent"],
+                result["telegram_sent"],
+            )
 
     def _run_if_due(self) -> int:
         db = get_session_factory()()
@@ -170,6 +249,17 @@ class CrawlScheduler:
                 except Exception:
                     db.rollback()
                     logger.exception("Scheduled ingest failed. complex_no=%s", complex_no)
+
+            try:
+                self._dispatch_daily_briefings_for_first_time(
+                    db=db,
+                    timezone=timezone,
+                    hhmm=hhmm,
+                    times=times,
+                )
+            except Exception:
+                db.rollback()
+                logger.exception("Scheduled daily briefing dispatch failed.")
             return poll_seconds
         finally:
             db.close()
