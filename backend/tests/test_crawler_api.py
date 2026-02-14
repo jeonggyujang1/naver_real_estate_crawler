@@ -90,3 +90,8 @@ def test_registration_rate_limit_blocks_excessive_attempts(monkeypatch: pytest.M
 
     assert exc_info.value.status_code == 429
     assert "회원가입 요청이 너무 많습니다" in str(exc_info.value.detail)
+
+
+def test_parse_scheduler_times_normalizes_values() -> None:
+    parsed = main._parse_scheduler_times("18:00, 09:00,wrong,25:00,09:00")
+    assert parsed == ["09:00", "18:00"]

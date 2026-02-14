@@ -16,6 +16,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -27,6 +28,10 @@ class User(Base):
     watch_complexes: Mapped[list["UserWatchComplex"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     presets: Mapped[list["UserPreset"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     refresh_tokens: Mapped[list["AuthRefreshToken"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    email_verification_tokens: Mapped[list["AuthEmailVerificationToken"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     access_token_revocations: Mapped[list["AuthAccessTokenRevocation"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
@@ -195,6 +200,22 @@ class AuthRefreshToken(Base):
     user: Mapped["User"] = relationship(back_populates="refresh_tokens")
 
 
+class AuthEmailVerificationToken(Base):
+    __tablename__ = "auth_email_verification_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_email_verification_token_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user: Mapped["User"] = relationship(back_populates="email_verification_tokens")
+
+
 class AuthAccessTokenRevocation(Base):
     __tablename__ = "auth_access_token_revocations"
     __table_args__ = (UniqueConstraint("jti", name="uq_access_jti"),)
@@ -250,3 +271,27 @@ class AlertDispatchLog(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user: Mapped["User"] = relationship(back_populates="alert_dispatch_logs")
+
+
+class SchedulerConfig(Base):
+    __tablename__ = "scheduler_configs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Seoul")
+    times_csv: Mapped[str] = mapped_column(String(255), nullable=False, default="09:00,18:00")
+    poll_seconds: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
+    reuse_bucket_hours: Mapped[int] = mapped_column(Integer, default=12, nullable=False)
+    updated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    updated_by_user: Mapped["User | None"] = relationship()

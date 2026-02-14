@@ -1,7 +1,9 @@
+import secrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
@@ -14,9 +16,11 @@ from app.crawler.naver_client import NaverLandClient
 from app.db import get_db, init_db
 from app.models import (
     AuthAccessTokenRevocation,
+    AuthEmailVerificationToken,
     AuthRefreshToken,
     CrawlRun,
     ListingSnapshot,
+    SchedulerConfig,
     User,
     UserNotificationSetting,
     UserPreset,
@@ -46,6 +50,7 @@ from app.services.billing import (
     get_user_entitlements,
 )
 from app.services.ingest import ingest_complex_snapshot
+from app.services.notifier import send_email_message
 from app.settings import get_settings
 
 settings = get_settings()
@@ -204,6 +209,68 @@ def _enforce_registration_rate_limit(client_key: str) -> None:
     attempts.append(now)
 
 
+def _parse_scheduler_times(raw: str) -> list[str]:
+    result: list[str] = []
+    for token in raw.split(","):
+        value = token.strip()
+        if len(value) == 5 and value[2] == ":" and value[:2].isdigit() and value[3:].isdigit():
+            hour = int(value[:2])
+            minute = int(value[3:])
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                result.append(f"{hour:02d}:{minute:02d}")
+    return sorted(set(result))
+
+
+def _serialize_scheduler_config(config: SchedulerConfig, configured_complex_count: int) -> dict[str, Any]:
+    return {
+        "enabled": config.enabled,
+        "timezone": config.timezone,
+        "times": _parse_scheduler_times(config.times_csv),
+        "times_csv": config.times_csv,
+        "poll_seconds": config.poll_seconds,
+        "reuse_bucket_hours": config.reuse_bucket_hours,
+        "configured_complex_count": configured_complex_count,
+        "updated_by_user_id": str(config.updated_by_user_id) if config.updated_by_user_id else None,
+        "updated_at": config.updated_at.isoformat() if config.updated_at else None,
+    }
+
+
+def _get_or_create_scheduler_config(db: Session) -> SchedulerConfig:
+    config = db.get(SchedulerConfig, 1)
+    if config is not None:
+        return config
+
+    config = SchedulerConfig(
+        id=1,
+        enabled=settings.scheduler_enabled,
+        timezone=settings.scheduler_timezone,
+        times_csv=settings.scheduler_times_csv,
+        poll_seconds=settings.scheduler_poll_seconds,
+        reuse_bucket_hours=settings.crawler_reuse_window_hours,
+    )
+    db.add(config)
+    db.flush()
+    return config
+
+
+def _build_email_verification_link(token: str) -> str:
+    base = settings.auth_email_verification_base_url.rstrip("/")
+    return f"{base}/auth/verify-email?token={token}"
+
+
+def _issue_email_verification_token(db: Session, user_id: UUID) -> tuple[str, datetime]:
+    raw_token = secrets.token_urlsafe(48)
+    expires_at = datetime.now(UTC) + timedelta(minutes=settings.auth_email_verification_ttl_minutes)
+    db.add(
+        AuthEmailVerificationToken(
+            user_id=user_id,
+            token_hash=hash_token(raw_token),
+            expires_at=expires_at,
+        )
+    )
+    return raw_token, expires_at
+
+
 @app.on_event("startup")
 async def startup_event() -> None:
     if settings.auto_create_tables and settings.app_env == "dev":
@@ -229,6 +296,78 @@ def meta() -> dict[str, str | int]:
         "crawler_max_retry": settings.crawler_max_retry,
         "crawler_reuse_window_hours": settings.crawler_reuse_window_hours,
     }
+
+
+@app.get("/scheduler/config")
+def scheduler_config_get(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    del current_user  # currently any authenticated user can update scheduler config.
+    config = _get_or_create_scheduler_config(db=db)
+    configured_complex_count = int(
+        db.scalar(
+            select(func.count(func.distinct(UserWatchComplex.complex_no))).where(UserWatchComplex.enabled.is_(True))
+        )
+        or 0
+    )
+    db.commit()
+    return _serialize_scheduler_config(config=config, configured_complex_count=configured_complex_count)
+
+
+@app.put("/scheduler/config")
+def scheduler_config_update(
+    enabled: bool = Body(..., embed=True),
+    timezone: str = Body(..., embed=True),
+    times_csv: str = Body(..., embed=True),
+    poll_seconds: int = Body(..., embed=True),
+    reuse_bucket_hours: int = Body(..., embed=True),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    normalized_timezone = timezone.strip()
+    try:
+        ZoneInfo(normalized_timezone)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid timezone") from exc
+
+    normalized_times = _parse_scheduler_times(times_csv)
+    if not normalized_times:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="times_csv must contain at least one valid HH:MM value",
+        )
+
+    if poll_seconds < 5 or poll_seconds > 300:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="poll_seconds must be between 5 and 300")
+    if reuse_bucket_hours < 0 or reuse_bucket_hours > 24:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="reuse_bucket_hours must be between 0 and 24",
+        )
+    if reuse_bucket_hours not in {0, 6, 12, 24}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="reuse_bucket_hours must be one of: 0, 6, 12, 24",
+        )
+
+    config = _get_or_create_scheduler_config(db=db)
+    config.enabled = enabled
+    config.timezone = normalized_timezone
+    config.times_csv = ",".join(normalized_times)
+    config.poll_seconds = poll_seconds
+    config.reuse_bucket_hours = reuse_bucket_hours
+    config.updated_by_user_id = current_user.id
+    db.commit()
+    db.refresh(config)
+
+    configured_complex_count = int(
+        db.scalar(
+            select(func.count(func.distinct(UserWatchComplex.complex_no))).where(UserWatchComplex.enabled.is_(True))
+        )
+        or 0
+    )
+    return _serialize_scheduler_config(config=config, configured_complex_count=configured_complex_count)
 
 
 @app.get("/crawler/articles/{complex_no}")
@@ -377,7 +516,7 @@ def auth_register(
     invite_code: str | None = Body(None, embed=True),
     x_forwarded_for: Annotated[str | None, Header()] = None,
     db: Session = Depends(get_db),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     client_key = _resolve_client_key(request=request, x_forwarded_for=x_forwarded_for)
     _enforce_registration_rate_limit(client_key=client_key)
 
@@ -394,7 +533,12 @@ def auth_register(
     if existing_user is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
 
-    user = User(email=normalized_email, password_hash=hash_password(password))
+    verification_required = settings.auth_email_verification_required
+    user = User(
+        email=normalized_email,
+        password_hash=hash_password(password),
+        email_verified=not verification_required,
+    )
     db.add(user)
     db.flush()
     db.add(
@@ -405,10 +549,42 @@ def auth_register(
         )
     )
     ensure_user_subscription(db=db, user_id=user.id)
+
+    verification_sent = False
+    verification_message = "verification not required"
+    verification_link: str | None = None
+    verification_expires_at: datetime | None = None
+    if verification_required:
+        raw_token, verification_expires_at = _issue_email_verification_token(db=db, user_id=user.id)
+        verification_link = _build_email_verification_link(token=raw_token)
+        email_subject = "[Naver Apt Briefing] 이메일 인증을 완료해주세요"
+        email_body = (
+            "회원가입을 완료하려면 아래 링크를 클릭해 이메일 인증을 완료해주세요.\n\n"
+            f"{verification_link}\n\n"
+            f"링크 만료 시각(UTC): {verification_expires_at.isoformat()}"
+        )
+        verification_sent, verification_message = send_email_message(
+            settings=settings,
+            to_email=user.email,
+            subject=email_subject,
+            body=email_body,
+        )
+
     db.commit()
     db.refresh(user)
 
-    return {"user_id": str(user.id), "email": user.email}
+    response: dict[str, Any] = {
+        "user_id": str(user.id),
+        "email": user.email,
+        "email_verification_required": verification_required,
+        "email_verification_sent": verification_sent,
+        "email_verification_message": verification_message,
+    }
+    if verification_expires_at is not None:
+        response["email_verification_expires_at"] = verification_expires_at.isoformat()
+    if verification_required and settings.app_env != "prod":
+        response["dev_email_verification_link"] = verification_link
+    return response
 
 
 @app.post("/auth/login")
@@ -423,6 +599,8 @@ def auth_login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
+    if not user.email_verified:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Email verification required")
 
     new_hash = maybe_rehash_password(password, user.password_hash)
     if new_hash:
@@ -431,6 +609,38 @@ def auth_login(
     payload, _refresh_jti = _issue_auth_tokens(db=db, user_id=user.id)
     db.commit()
     return payload
+
+
+@app.get("/auth/verify-email", response_class=HTMLResponse)
+def auth_verify_email(
+    token: str = Query(..., min_length=20),
+    db: Session = Depends(get_db),
+) -> str:
+    token_hash = hash_token(token)
+    record = db.scalar(
+        select(AuthEmailVerificationToken)
+        .where(AuthEmailVerificationToken.token_hash == token_hash)
+        .with_for_update()
+    )
+    if record is None:
+        return "<h3>이메일 인증 실패</h3><p>유효하지 않은 인증 링크입니다.</p>"
+    if record.consumed_at is not None:
+        return "<h3>이메일 인증 완료</h3><p>이미 인증이 완료된 링크입니다. 로그인해 주세요.</p>"
+    if record.expires_at < datetime.now(UTC):
+        return "<h3>이메일 인증 실패</h3><p>인증 링크가 만료되었습니다. 다시 요청해 주세요.</p>"
+
+    user = db.get(User, record.user_id)
+    if user is None:
+        return "<h3>이메일 인증 실패</h3><p>사용자를 찾을 수 없습니다.</p>"
+
+    user.email_verified = True
+    record.consumed_at = datetime.now(UTC)
+    db.commit()
+    return (
+        "<h3>이메일 인증 완료</h3>"
+        "<p>인증이 완료되었습니다. 앱으로 돌아가 로그인해 주세요.</p>"
+        "<p><a href='/'>대시보드로 이동</a></p>"
+    )
 
 
 @app.post("/auth/refresh")
@@ -626,25 +836,34 @@ def me_watch_complexes_collection_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    scheduler_config = _get_or_create_scheduler_config(db=db)
+    active_watch_complex_nos = set(
+        db.scalars(
+            select(UserWatchComplex.complex_no)
+            .where(UserWatchComplex.enabled.is_(True))
+            .distinct()
+        ).all()
+    )
+    scheduler_times = _parse_scheduler_times(scheduler_config.times_csv)
+
     watches = db.scalars(
         select(UserWatchComplex)
         .where(UserWatchComplex.user_id == current_user.id)
         .order_by(UserWatchComplex.created_at.desc())
     ).all()
     complex_nos = list({item.complex_no for item in watches})
-    scheduler_complex_nos = set(_parse_csv_ints(settings.scheduler_complex_nos_csv))
-    scheduler_times = sorted([token.strip() for token in settings.scheduler_times_csv.split(",") if token.strip()])
 
     if not complex_nos:
         return {
             "count": 0,
             "auto_collect": {
-                "enabled": settings.scheduler_enabled,
-                "timezone": settings.scheduler_timezone,
+                "enabled": scheduler_config.enabled,
+                "timezone": scheduler_config.timezone,
                 "times": scheduler_times,
-                "poll_seconds": settings.scheduler_poll_seconds,
-                "configured_complex_count": len(scheduler_complex_nos),
-                "note": "자동수집 주기는 서버 전역 설정입니다. 계정별로 개별 주기를 다르게 두지는 않습니다.",
+                "poll_seconds": scheduler_config.poll_seconds,
+                "reuse_bucket_hours": scheduler_config.reuse_bucket_hours,
+                "configured_complex_count": len(active_watch_complex_nos),
+                "note": "자동수집 주기/재사용 버킷은 서버 전역 설정이며, 수집 대상은 전체 계정의 활성 관심단지입니다.",
             },
             "items": [],
         }
@@ -749,19 +968,20 @@ def me_watch_complexes_collection_status(
                 ),
                 "last_run_status": last_run_meta.get("status") if last_run_meta else None,
                 "last_run_error": last_run_meta.get("error_message") if last_run_meta else None,
-                "auto_collect_target": watch.complex_no in scheduler_complex_nos,
+                "auto_collect_target": scheduler_config.enabled and watch.complex_no in active_watch_complex_nos,
             }
         )
 
     return {
         "count": len(items),
         "auto_collect": {
-            "enabled": settings.scheduler_enabled,
-            "timezone": settings.scheduler_timezone,
+            "enabled": scheduler_config.enabled,
+            "timezone": scheduler_config.timezone,
             "times": scheduler_times,
-            "poll_seconds": settings.scheduler_poll_seconds,
-            "configured_complex_count": len(scheduler_complex_nos),
-            "note": "자동수집 주기는 서버 전역 설정입니다. 계정별로 개별 주기를 다르게 두지는 않습니다.",
+            "poll_seconds": scheduler_config.poll_seconds,
+            "reuse_bucket_hours": scheduler_config.reuse_bucket_hours,
+            "configured_complex_count": len(active_watch_complex_nos),
+            "note": "자동수집 주기/재사용 버킷은 서버 전역 설정이며, 수집 대상은 전체 계정의 활성 관심단지입니다.",
         },
         "items": items,
     }

@@ -205,7 +205,23 @@ async function register() {
     method: "POST",
     body: JSON.stringify({ email, password, invite_code: inviteCode }),
   });
-  setStatus("#authStatus", `회원가입 완료: ${data.email}`);
+  if (data.email_verification_required) {
+    const sentMessage = data.email_verification_sent
+      ? "인증 메일을 발송했습니다."
+      : `인증 메일 발송 실패(${data.email_verification_message || "원인 미상"})`;
+    const expiresAt = data.email_verification_expires_at
+      ? ` 만료 시각: ${formatTimestamp(data.email_verification_expires_at)}`
+      : "";
+    const devLink = data.dev_email_verification_link
+      ? ` 개발 모드 인증 링크: ${data.dev_email_verification_link}`
+      : "";
+    setStatus(
+      "#authStatus",
+      `회원가입 완료: ${data.email}. 이메일 인증 후 로그인할 수 있습니다. ${sentMessage}${expiresAt}${devLink}`
+    );
+    return;
+  }
+  setStatus("#authStatus", `회원가입 완료: ${data.email}. 바로 로그인할 수 있습니다.`);
 }
 
 async function login() {
@@ -392,7 +408,8 @@ function renderCollectionStatus(data) {
     `시간대: ${auto.timezone || "-"}`,
     `실행 시각: ${timesText}`,
     `폴링주기: ${auto.poll_seconds || "-"}초`,
-    "현재 자동수집 주기는 서버 전역 설정입니다.",
+    `재사용 버킷: ${auto.reuse_bucket_hours ?? "-"}시간`,
+    "현재 자동수집 주기/재사용 버킷은 서버 전역 설정입니다.",
   ].join(" | ");
   qs("#collectionAutoCollectHint").textContent = hint;
 
@@ -424,6 +441,46 @@ function renderCollectionStatus(data) {
 async function loadCollectionStatus() {
   const data = await api("/me/watch-complexes/collection-status");
   renderCollectionStatus(data);
+}
+
+async function loadSchedulerConfig() {
+  const data = await api("/scheduler/config");
+  qs("#schedulerEnabled").checked = Boolean(data.enabled);
+  qs("#schedulerTimezone").value = data.timezone || "Asia/Seoul";
+  qs("#schedulerTimesCsv").value = data.times_csv || "";
+  qs("#schedulerPollSeconds").value = String(data.poll_seconds ?? 20);
+  qs("#schedulerReuseBucketHours").value = String(data.reuse_bucket_hours ?? 12);
+  setStatus(
+    "#collectionStatusNote",
+    `스케줄 설정 로드 완료: ${data.enabled ? "활성" : "비활성"} / ${data.times_csv || "-"} / 재사용 ${
+      data.reuse_bucket_hours
+    }시간`
+  );
+}
+
+async function saveSchedulerConfig() {
+  const enabled = qs("#schedulerEnabled").checked;
+  const timezone = qs("#schedulerTimezone").value.trim();
+  const timesCsv = qs("#schedulerTimesCsv").value.trim();
+  const pollSeconds = Number(qs("#schedulerPollSeconds").value || "20");
+  const reuseBucketHours = Number(qs("#schedulerReuseBucketHours").value || "12");
+
+  const data = await api("/scheduler/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled,
+      timezone,
+      times_csv: timesCsv,
+      poll_seconds: pollSeconds,
+      reuse_bucket_hours: reuseBucketHours,
+    }),
+  });
+  qs("#schedulerEnabled").checked = Boolean(data.enabled);
+  qs("#schedulerTimezone").value = data.timezone || "Asia/Seoul";
+  qs("#schedulerTimesCsv").value = data.times_csv || "";
+  qs("#schedulerPollSeconds").value = String(data.poll_seconds ?? 20);
+  qs("#schedulerReuseBucketHours").value = String(data.reuse_bucket_hours ?? 12);
+  setStatus("#collectionStatusNote", "스케줄 설정 저장 완료");
 }
 
 function parsePriceToManwon(raw) {
@@ -855,6 +912,8 @@ bind("#addWatchBtn", addWatchComplex, ["#watchStatus"]);
 bind("#loadWatchBtn", loadWatchComplexes, ["#watchStatus"]);
 bind("#loadLiveWatchBtn", loadLiveWatchComplexes, ["#liveWatchStatus"]);
 bind("#loadCollectionStatusBtn", loadCollectionStatus, ["#collectionStatusNote"]);
+bind("#loadSchedulerConfigBtn", loadSchedulerConfig, ["#collectionStatusNote"]);
+bind("#saveSchedulerConfigBtn", saveSchedulerConfig, ["#collectionStatusNote"]);
 bind("#ingestBtn", ingestNow, ["#ingestStatus"]);
 bind("#metaBtn", loadMeta, ["#ingestStatus"]);
 bind("#billingMeBtn", loadBillingMe, ["#billingStatus"]);

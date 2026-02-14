@@ -37,7 +37,7 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    command: ["sh", "-c", "alembic upgrade head && python -m app.worker"]
+    command: ["python", "-m", "app.worker"]
     depends_on:
       db:
         condition: service_healthy

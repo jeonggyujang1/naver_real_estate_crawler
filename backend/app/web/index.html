@@ -139,6 +139,15 @@
         background: #fff;
       }
 
+      input[type="checkbox"] {
+        width: auto;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        accent-color: var(--accent);
+        transform: scale(1.1);
+      }
+
       button {
         padding: 10px 14px;
         border: 0;
@@ -312,7 +321,7 @@
               <button id="loginBtn" class="alt">로그인</button>
             </div>
             <div class="hint">
-              운영자가 가입 승인 코드를 설정한 경우에만 입력하세요. 미설정 환경에서는 비워둬도 회원가입됩니다.
+              운영자가 가입 승인 코드를 설정한 경우에만 입력하세요. 이메일 인증이 켜진 환경에서는 메일 링크를 클릭해야 로그인됩니다.
             </div>
           </div>
           <div id="authUserControls" class="auth-controls">
@@ -427,6 +436,32 @@
           <h2>2-2) 수집 이력 / 자동수집 상태</h2>
           <div class="row">
             <button id="loadCollectionStatusBtn" class="alt">수집 상태 조회</button>
+            <button id="loadSchedulerConfigBtn" class="alt">스케줄 설정 불러오기</button>
+          </div>
+          <div class="fields" style="margin-top: 8px">
+            <div class="field">
+              <label for="schedulerEnabled">자동수집 사용</label>
+              <input id="schedulerEnabled" type="checkbox" />
+            </div>
+            <div class="field">
+              <label for="schedulerTimezone">시간대</label>
+              <input id="schedulerTimezone" type="text" value="Asia/Seoul" placeholder="예: Asia/Seoul" />
+            </div>
+            <div class="field">
+              <label for="schedulerTimesCsv">실행 시각(CSV)</label>
+              <input id="schedulerTimesCsv" type="text" value="09:00,18:00" placeholder="예: 09:00,18:00" />
+            </div>
+            <div class="field">
+              <label for="schedulerPollSeconds">폴링 주기(초)</label>
+              <input id="schedulerPollSeconds" type="number" value="20" min="5" max="300" />
+            </div>
+            <div class="field">
+              <label for="schedulerReuseBucketHours">재사용 버킷(시간)</label>
+              <input id="schedulerReuseBucketHours" type="number" value="12" min="0" max="24" />
+            </div>
+          </div>
+          <div class="row" style="margin-top: 8px">
+            <button id="saveSchedulerConfigBtn">스케줄 설정 저장</button>
           </div>
           <div class="hint" id="collectionAutoCollectHint">
             자동수집 정보 로딩 전입니다. 버튼을 눌러 현재 스케줄과 관심 단지별 최신 수집 시각을 확인하세요.

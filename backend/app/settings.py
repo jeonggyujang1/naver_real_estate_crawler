@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     auth_jwt_issuer: str = "naver-apt-briefing"
     auth_access_token_ttl_minutes: int = Field(default=15, ge=5, le=60)
     auth_refresh_token_ttl_days: int = Field(default=30, ge=1, le=90)
+    auth_email_verification_required: bool = False
+    auth_email_verification_ttl_minutes: int = Field(default=1440, ge=5, le=10080)
+    auth_email_verification_base_url: str = "http://127.0.0.1:18080"
     auth_register_invite_code: str | None = None
     auth_register_rate_limit_per_window: int = Field(default=20, ge=1, le=200)
     auth_register_rate_limit_window_minutes: int = Field(default=60, ge=1, le=1440)
