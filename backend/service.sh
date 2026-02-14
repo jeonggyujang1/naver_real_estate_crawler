@@ -22,7 +22,7 @@ else
 fi
 
 compose() {
-  docker compose -f "$COMPOSE_FILE" "$@"
+  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }
 
 read_port_from_env() {
@@ -65,9 +65,10 @@ ensure_env_file() {
   exit 1
 }
 
+ensure_env_file
+
 case "$ACTION" in
   on)
-    ensure_env_file
     echo "[INFO] Starting services (profile=$PROFILE, compose=$COMPOSE_FILE)"
     compose up -d --build
     compose ps
