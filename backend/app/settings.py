@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     crawler_max_retry: int = Field(default=3, ge=0, le=10)
     crawler_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
     crawler_reuse_window_hours: int = Field(default=12, ge=0, le=24)
+    jeonse_monthly_conversion_rate_default: float = Field(default=5.1, ge=0.1, le=30.0)
     auto_create_tables: bool = False
     scheduler_enabled: bool = False
     scheduler_timezone: str = "Asia/Seoul"

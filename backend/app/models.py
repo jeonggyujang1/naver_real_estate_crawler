@@ -245,6 +245,8 @@ class UserNotificationSetting(Base):
     bargain_alert_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     bargain_lookback_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
     bargain_discount_threshold: Mapped[float] = mapped_column(Float, default=0.08, nullable=False)
+    interest_trade_type: Mapped[str] = mapped_column(String(20), default="ALL", nullable=False)
+    monthly_rent_conversion_rate_pct: Mapped[float | None] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
