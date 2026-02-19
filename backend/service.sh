@@ -9,7 +9,7 @@ PROFILE="${2:-dev}"
 
 if [[ "$PROFILE" != "dev" && "$PROFILE" != "prod" ]]; then
   echo "[ERROR] profile must be 'dev' or 'prod'"
-  echo "usage: ./service.sh {on|off|restart|status|logs} [dev|prod]"
+  echo "usage: ./service.sh {on|off|restart|rebuild|status|logs} [dev|prod]"
   exit 1
 fi
 
@@ -67,10 +67,29 @@ ensure_env_file() {
 
 ensure_env_file
 
+show_usage() {
+  echo "usage: ./service.sh {on|off|restart|rebuild|status|logs} [dev|prod]"
+}
+
+run_up() {
+  local mode="${1:-normal}"
+  if [[ "$mode" == "build" ]]; then
+    compose up -d --build
+    return
+  fi
+
+  # In prod, default to no-build to avoid slow deploy loops on small VPS instances.
+  if [[ "$PROFILE" == "prod" ]]; then
+    compose up -d
+  else
+    compose up -d --build
+  fi
+}
+
 case "$ACTION" in
   on)
     echo "[INFO] Starting services (profile=$PROFILE, compose=$COMPOSE_FILE)"
-    compose up -d --build
+    run_up normal
     compose ps
     if [[ "$PROFILE" == "dev" ]]; then
       APP_PORT="$(read_port_from_env)"
@@ -88,7 +107,13 @@ case "$ACTION" in
   restart)
     echo "[INFO] Restarting services (profile=$PROFILE, compose=$COMPOSE_FILE)"
     compose down
-    compose up -d --build
+    run_up normal
+    compose ps
+    ;;
+  rebuild)
+    echo "[INFO] Rebuilding images and starting services (profile=$PROFILE, compose=$COMPOSE_FILE)"
+    compose down
+    run_up build
     compose ps
     ;;
   status)
@@ -103,7 +128,7 @@ case "$ACTION" in
     ;;
   *)
     echo "[ERROR] unknown action: $ACTION"
-    echo "usage: ./service.sh {on|off|restart|status|logs} [dev|prod]"
+    show_usage
     exit 1
     ;;
 esac
